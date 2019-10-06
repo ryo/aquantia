@@ -155,6 +155,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_INTR_MASK_CLR			0x2070	/* intr mask clear */
 #define AQ_INTR_AUTOMASK			0x2090
 
+#define AQ_INTR_IRQ_MAP_TX_ADR(tx)		(0x2100 + ((tx) / 2) * 4)
+#define AQ_INTR_IRQ_MAP_TX_MSK(tx)		(__BITS(28,24) >> (((tx) & 1) * 8))
+#define AQ_INTR_IRQ_MAP_TX_EN_MSK(tx)		(__BIT(31) >> (((tx) & 1) * 8))
+
 #define AQ_GEN_INTR_MAP_ADR(i)			(0x2180 + (i) * 0x4)
 #define  HW_ATL_B0_ERR_INT			8
 
@@ -2518,70 +2522,6 @@ aq_if_disable_intr(struct aq_softc *sc)
 	AQ_WRITE_REG(sc, AQ_INTR_MASK_CLR, 0xffffffff);
 }
 
-static void
-intr_irq_map_tx_set(struct aq_softc *sc, uint32_t irq_map_tx, uint32_t tx)
-{
-	/* register address for bitfield imr_tx{t}[4:0] */
-	static uint32_t itr_imr_txt_adr[32] = {
-		0x00002100, 0x00002100, 0x00002104, 0x00002104,
-		0x00002108, 0x00002108, 0x0000210C, 0x0000210C,
-		0x00002110, 0x00002110, 0x00002114, 0x00002114,
-		0x00002118, 0x00002118, 0x0000211C, 0x0000211C,
-		0x00002120, 0x00002120, 0x00002124, 0x00002124,
-		0x00002128, 0x00002128, 0x0000212C, 0x0000212C,
-		0x00002130, 0x00002130, 0x00002134, 0x00002134,
-		0x00002138, 0x00002138, 0x0000213C, 0x0000213C
-	};
-
-	/* bitmask for bitfield imr_tx{t}[4:0] */
-	static uint32_t itr_imr_txt_msk[32] = {
-		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
-		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
-		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
-		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
-		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
-		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
-		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
-		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000
-	};
-
-	AQ_WRITE_REG_BIT(sc, itr_imr_txt_adr[tx],
-	    itr_imr_txt_msk[tx],
-	    irq_map_tx);
-}
-
-static void
-intr_irq_map_en_tx_set(struct aq_softc *sc, uint32_t irq_map_en_tx, uint32_t tx)
-{
-	/* register address for bitfield imr_tx{t}_en */
-	static uint32_t itr_imr_txten_adr[32] = {
-		0x00002100, 0x00002100, 0x00002104, 0x00002104,
-		0x00002108, 0x00002108, 0x0000210C, 0x0000210C,
-		0x00002110, 0x00002110, 0x00002114, 0x00002114,
-		0x00002118, 0x00002118, 0x0000211C, 0x0000211C,
-		0x00002120, 0x00002120, 0x00002124, 0x00002124,
-		0x00002128, 0x00002128, 0x0000212C, 0x0000212C,
-		0x00002130, 0x00002130, 0x00002134, 0x00002134,
-		0x00002138, 0x00002138, 0x0000213C, 0x0000213C
-	};
-
-	/* bitmask for bitfield imr_tx{t}_en */
-	static uint32_t itr_imr_txten_msk[32] = {
-		0x80000000, 0x00800000, 0x80000000, 0x00800000,
-		0x80000000, 0x00800000, 0x80000000, 0x00800000,
-		0x80000000, 0x00800000, 0x80000000, 0x00800000,
-		0x80000000, 0x00800000, 0x80000000, 0x00800000,
-		0x80000000, 0x00800000, 0x80000000, 0x00800000,
-		0x80000000, 0x00800000, 0x80000000, 0x00800000,
-		0x80000000, 0x00800000, 0x80000000, 0x00800000,
-		0x80000000, 0x00800000, 0x80000000, 0x00800000
-	};
-
-	AQ_WRITE_REG_BIT(sc, itr_imr_txten_adr[tx],
-	    itr_imr_txten_msk[tx],
-	    irq_map_en_tx);
-}
-
 
 static void
 aq_txring_init(struct aq_softc *sc, struct aq_txring *txring, bool enable_dma)
@@ -2618,8 +2558,8 @@ aq_txring_init(struct aq_softc *sc, struct aq_txring *txring, bool enable_dma)
 		AQ_WRITE_REG(sc, TX_DMA_DESC_WRWB_THRESH_ADR(ringidx), 0);
 
 		/* irq map */
-		intr_irq_map_tx_set(sc, 0, ringidx);	//XXX
-		intr_irq_map_en_tx_set(sc, true, ringidx);	//XXX
+		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_TX_ADR(ringidx), AQ_INTR_IRQ_MAP_TX_MSK(ringidx), 0);
+		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_TX_ADR(ringidx), AQ_INTR_IRQ_MAP_TX_EN_MSK(ringidx), true);
 
 		/* enable DMA */
 		AQ_OR_REG(sc, TX_DMA_DESC_LEN_ADR(ringidx),
