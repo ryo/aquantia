@@ -631,6 +631,7 @@ struct aq_softc {
 	struct aq_rxring sc_rxring[AQ_RXRING_NUM];
 	int sc_txringnum;
 	int sc_rxringnum;
+	int sc_ringnum;	/* = MAX(sc_txringnum, sc_rxringnum) */
 
 	pci_chipset_tag_t sc_pc;
 	pcitag_t sc_pcitag;
@@ -665,7 +666,10 @@ struct aq_softc {
 	int sc_media_active;
 	struct aq_hw_fc_info sc_fc;
 
+#undef USE_CALLOUT_TICK
+#ifdef USE_CALLOUT_TICK
 	callout_t sc_tick_ch;
+#endif
 	struct ethercom sc_ethercom;
 	struct ifmedia sc_media;
 	struct ether_addr sc_enaddr;
@@ -712,6 +716,9 @@ static int aq_txring_alloc(struct aq_softc *, struct aq_txring *);
 static void aq_txring_free(struct aq_softc *, struct aq_txring *);
 static int aq_rxring_alloc(struct aq_softc *, struct aq_rxring *);
 static void aq_rxring_free(struct aq_softc *, struct aq_rxring *);
+
+static int aq_tx_intr(struct aq_txring *);
+static int aq_rx_intr(struct aq_rxring *);
 
 static int fw1x_reset(struct aq_softc *);
 static int fw1x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t,
@@ -1902,17 +1909,19 @@ aq_hw_init(struct aq_softc *sc)
 	return 0;
 }
 
-static void
+static int
 aq_if_update_admin_status(struct aq_softc *sc)
 {
 	struct aq_hw_fc_info fc_neg;
 	uint32_t link_speed = 0;
+	int changed = 0;
 
 	aq_hw_get_link_state(sc, &link_speed, &fc_neg);
 	if ((sc->sc_link_speed != link_speed) && (link_speed != 0)) {
 		/* link DOWN -> UP */
 		aprint_debug_dev(sc->sc_dev, "link UP: speed=%d\n", link_speed);
 		sc->sc_link_speed = link_speed;
+		changed = 1;
 
 		/* turn on/off RX Pause in RPB */
 		AQ_WRITE_REG_BIT(sc, RPB_RXBXOFF_EN_ADR, RPB_RXBXOFF_EN, fc_neg.fc_rx ? 1 : 0);
@@ -1926,6 +1935,7 @@ aq_if_update_admin_status(struct aq_softc *sc)
 		/* link UP -> DOWN */
 		aprint_debug_dev(sc->sc_dev, "link DOWN\n");
 		sc->sc_link_speed = 0;
+		changed = 1;
 
 		/* turn off RX Pause in RPB */
 		AQ_WRITE_REG_BIT(sc, RPB_RXBXOFF_EN_ADR, RPB_RXBXOFF_EN, 0);
@@ -1971,6 +1981,7 @@ aq_if_update_admin_status(struct aq_softc *sc)
 		sc->sc_statistics_idx = cur;
 	}
 
+	return changed;
 }
 
 /* allocate and map one DMA blocks */
@@ -2263,6 +2274,7 @@ aq_txrx_rings_free(struct aq_softc *sc)
 		aq_rxring_free(sc, &sc->sc_rxring[n]);
 }
 
+#ifdef USE_CALLOUT_TICK
 static void
 aq_tick(void *arg)
 {
@@ -2272,18 +2284,31 @@ aq_tick(void *arg)
 
 	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
 }
+#endif
 
 static int
 aq_intr(void *arg)
 {
 	struct aq_softc *sc __unused = arg;
 	uint32_t status;
+	int handled = 0;
+	int i;
 
 	status = AQ_READ_REG(sc, AQ_INTR_STATUS);	/* clear on read */
+	printf("### %s: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, AQ_READ_REG(sc, AQ_INTR_MASK), status, AQ_READ_REG(sc, AQ_INTR_STATUS));
 
-	printf("######################### %s:%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, __LINE__, AQ_READ_REG(sc, AQ_INTR_MASK), status, AQ_READ_REG(sc, AQ_INTR_STATUS));
+	if (status & __BIT(LINKUP_IRQ)) {
+		handled += aq_if_update_admin_status(sc);
+	}
 
-	return 0;
+	for (i = 0; i < sc->sc_ringnum; i++) {
+		if (status & __BIT(i)) {
+			handled += aq_rx_intr(&sc->sc_rxring[i]);
+			handled += aq_tx_intr(&sc->sc_txring[i]);
+		}
+	}
+
+	return handled;
 }
 
 /* Interrupt enable / disable */
@@ -2347,7 +2372,9 @@ aq_attach(device_t parent, device_t self, void *aux)
 
 	sc->sc_dev = self;
 	mutex_init(&sc->sc_mutex, MUTEX_DEFAULT, IPL_NET);
+#ifdef USE_CALLOUT_TICK
 	callout_init(&sc->sc_tick_ch, 0);	/* XXX: CALLOUT_MPSAFE */
+#endif
 	sc->sc_pc = pc = pa->pa_pc;
 	sc->sc_pcitag = tag = pa->pa_tag;
 	sc->sc_dmat = pci_dma64_available(pa) ? pa->pa_dmat64 : pa->pa_dmat;
@@ -2391,6 +2418,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 
 	sc->sc_txringnum = AQ_TXRING_NUM;
 	sc->sc_rxringnum = AQ_RXRING_NUM;
+	sc->sc_ringnum = MAX(sc->sc_txringnum, sc->sc_rxringnum);
 	error = aq_txrx_rings_alloc(sc);
 	if (error != 0)
 		goto attach_failure;
@@ -2467,7 +2495,9 @@ aq_attach(device_t parent, device_t self, void *aux)
 		sc->sc_statistics_enable = true;
 	}
 
+#ifdef USE_CALLOUT_TICK
 	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
+#endif
 
 	return;
 
@@ -2504,7 +2534,9 @@ aq_detach(device_t self, int flags __unused)
 		sc->sc_iosize = 0;
 	}
 
+#ifdef USE_CALLOUT_TICK
 	callout_stop(&sc->sc_tick_ch);
+#endif
 	mutex_destroy(&sc->sc_mutex);
 
 	return 0;
@@ -2706,6 +2738,47 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	return 0;
 }
 
+static int
+aq_tx_intr(struct aq_txring *txring)
+{
+	struct aq_softc *sc = txring->ring_sc;
+	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	int headidx, idx;
+
+	headidx = AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_DHD_MASK);
+
+	printf("%s:%d: ringidx=%d, HEAD_PTR=%u\n", __func__, __LINE__, txring->ring_index, headidx);
+
+	for (idx = txring->ring_considx; idx != headidx; idx = TXRING_NEXTIDX(idx)) {
+		if (txring->ring_mbufs[idx].m != NULL) {
+			bus_dmamap_unload(sc->sc_dmat, txring->ring_mbufs[idx].dmamap);
+			m_freem(txring->ring_mbufs[idx].m);
+			txring->ring_mbufs[idx].m = NULL;
+			ifp->if_opackets++;
+		}
+
+		txring->ring_nfree++;
+	}
+	txring->ring_considx = idx;
+
+	if (txring->ring_nfree > 0)
+		ifp->if_flags &= ~IFF_OACTIVE;
+
+	/*
+	 * no more pending TX packet? cancel watchdog.
+	 * XXX: consider multi tx rings...
+	 */
+	if (txring->ring_nfree >= AQ_TXD_NUM)
+		ifp->if_timer = 0;
+
+	return 0;
+}
+
+static int
+aq_rx_intr(struct aq_rxring *rxring)
+{
+	return 0;
+}
 
 static int
 aq_init(struct ifnet *ifp)
@@ -2742,8 +2815,10 @@ aq_init(struct ifnet *ifp)
 //	aq_hw_rss_set();
 //	aq_hw_udp_rss_enable();
 
+#ifdef USE_CALLOUT_TICK
 	/* for resume */
 	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
+#endif
 
 	/* ready */
 	ifp->if_flags |= IFF_RUNNING;
@@ -2835,8 +2910,10 @@ aq_stop(struct ifnet *ifp, int disable)
 		/* ifconfig down, but linkup intr is enabled */
 		aq_enable_intr(sc, true, false);
 	} else {
+#ifdef USE_CALLOUT_TICK
 		/* pmf stop, disable callout */
 		callout_stop(&sc->sc_tick_ch);
+#endif
 	}
 
 	ifp->if_flags &= ~(IFF_RUNNING | IFF_OACTIVE);
