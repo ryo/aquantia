@@ -163,9 +163,15 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  HW_ATL_B0_ERR_INT			8
 
 #define AQ_INTR_CTRL				0x2300
-#define  AQ_INTR_IRQMODE			__BITS(1,0)
-#define  AQ_INTR_CTRL_CLR_ON_READ		__BIT(7)
+#define  AQ_INTR_CTRL_IRQMODE			__BITS(1,0)
+#define  AQ_INTR_CTRL_IRQMODE_LEGACY		0
+#define  AQ_INTR_CTRL_IRQMODE_MSI		1
+#define  AQ_INTR_CTRL_IRQMODE_MSIX		2
+#define  AQ_INTR_CTRL_MULTIVEC			__BIT(2)	//?
 #define  AQ_INTR_CTRL_AUTO_MASK			__BIT(5)
+#define  AQ_INTR_CTRL_CLR_ON_READ		__BIT(7)
+#define  AQ_INTR_CTRL_RESET_DISABLE		__BIT(29)
+#define  AQ_INTR_CTRL_RESET_IRQ			__BIT(31)
 
 //#define ITR_REG_RES_DSBL_ADR			AQ_INTR_CTRL
 //#define ITR_RES_ADR				AQ_INTR_CTRL
@@ -194,6 +200,34 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define STATS_RX_LO_COALESCED_PKT_COUNT0_ADDR	0x6820
 
 #define HW_ATL_TX_REG_RES_DSBL_ADR		0x7000
+
+#define TPS_DESC_VM_ARB_MODE_ADR		0x7300
+#define  TPS_DESC_VM_ARB_MODE_MSK		__BIT(0)
+#define TPS_DESC_RATE_REG			0x7310
+#define  TPS_DESC_RATE_TA_RST			__BIT(31)
+#define  TPS_DESC_RATE_LIM			__BITS(10,0)
+#define TPS_DESC_TC_ARB_MODE_ADR		0x7200
+#define  TPS_DESC_TC_ARB_MODE_MSK		__BITS(1,0)
+#define TPS_DATA_TC_ARB_MODE_ADR		0x7100
+#define  TPS_DATA_TC_ARB_MODE_MSK		__BIT(0)
+#define TPS_DATA_TCTCREDIT_MAX_ADR(tc)		(0x7110 + (tc) * 0x4)
+#define  TPS_DATA_TCTCREDIT_MAX_MSK		__BITS(16,27)
+#define TPS_DATA_TCTWEIGHT_ADR(tc)		TPS_DATA_TCTCREDIT_MAX_ADR(tc)
+#define  TPS_DATA_TCTWEIGHT_MSK			__BITS(8,0)
+#define TPS_DESC_TCTCREDIT_MAX_ADR(tc)		(0x7210 + (tc) * 0x4)
+#define  TPS_DESC_TCTCREDIT_MAX_MSK		__BITS(16,27)
+#define TPS_DESC_TCTWEIGHT_ADR(tc)		TPS_DESC_TCTCREDIT_MAX_ADR(tc)
+#define  TPS_DESC_TCTWEIGHT_MSK			__BITS(8,0)
+
+#define AQ_HW_TXBUF_MAX		160
+#define AQ_HW_RXBUF_MAX		320
+
+#define TPB_TXBBUF_SIZE_ADR(buffer)		(0x7910 + (buffer) * 0x10)
+#define  TPB_TXBBUF_SIZE_MSK			__BITS(7,0)
+#define TPB_TXBHI_THRESH_ADR(buffer)		(0x7914 + (buffer) * 0x10)
+#define  TPB_TXBHI_THRESH_MSK			__BITS(16,28)
+#define TPB_TXBLO_THRESH_ADR(buffer)		(0x7914 + (buffer) * 0x10)
+#define  TPB_TXBLO_THRESH_MSK			__BITS(12,0)
 
 #define AQ_HW_TX_DMA_TOTAL_REQ_LIMIT_ADR	0x7b20
 #define TX_DMA_INT_DESC_WRWB_EN_ADR		0x7b40
@@ -339,13 +373,6 @@ typedef enum aq_fw_bootloader_mode {
 		AQ_WRITE_REG((sc), (reg), _v | (val));		\
 	} while (/* CONSTCOND */ 0)
 
-#define AQ_AND_REG(sc, reg, val)				\
-	do {							\
-		uint32_t _v;					\
-		_v = AQ_READ_REG((sc), (reg));			\
-		AQ_WRITE_REG((sc), (reg), _v & (val));		\
-	} while (/* CONSTCOND */ 0)
-
 #define AQ_READ_REG_BIT(sc, reg, mask)				\
 	__SHIFTOUT(AQ_READ_REG(sc, reg), mask)
 
@@ -354,7 +381,8 @@ typedef enum aq_fw_bootloader_mode {
 		uint32_t _v;					\
 		_v = AQ_READ_REG((sc), (reg));			\
 		_v &= ~(mask);					\
-		_v |= __SHIFTIN((val), (mask));			\
+		if ((val) != 0)					\
+			_v |= __SHIFTIN((val), (mask));		\
 		AQ_WRITE_REG((sc), (reg), _v);			\
 	} while (/* CONSTCOND */ 0)
 
@@ -533,10 +561,13 @@ typedef struct aq_tx_desc {
 
 //#define AQ_TXRING_NUM	16	/* <= AQ_RINGS_MAX */
 //#define AQ_RXRING_NUM	16	/* <= AQ_RINGS_MAX */
-#define AQ_TXRING_NUM	1	/* <= AQ_RINGS_MAX */
-#define AQ_RXRING_NUM	1	/* <= AQ_RINGS_MAX */
+#define AQ_TXRING_NUM	4	/* <= AQ_RINGS_MAX */
+#define AQ_RXRING_NUM	4	/* <= AQ_RINGS_MAX */
 #define AQ_TXD_NUM	32	/* per ring */
 #define AQ_RXD_NUM	32	/* per ring */
+
+#define LINKUP_IRQ	0
+
 
 struct aq_txring {
 	struct aq_softc *ring_sc;
@@ -598,6 +629,8 @@ struct aq_softc {
 
 	struct aq_txring sc_txring[AQ_TXRING_NUM];
 	struct aq_rxring sc_rxring[AQ_RXRING_NUM];
+	int sc_txringnum;
+	int sc_rxringnum;
 
 	pci_chipset_tag_t sc_pc;
 	pcitag_t sc_pcitag;
@@ -945,10 +978,10 @@ aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
 	    (enaddr[5]);
 
 	/* disable, set, and enable */
-	AQ_AND_REG(sc, RPFL2UC_ENF_ADR(index), ~RPFL2UC_EN);
+	AQ_WRITE_REG_BIT(sc, RPFL2UC_ENF_ADR(index), RPFL2UC_EN, 0);
 	AQ_WRITE_REG(sc, RPFL2UC_DAFLSW_ADR(index), l);
 	AQ_WRITE_REG(sc, RPFL2UC_DAFMSW_ADR(index), h);
-	AQ_OR_REG(sc, RPFL2UC_ENF_ADR(index), RPFL2UC_EN);
+	AQ_WRITE_REG_BIT(sc, RPFL2UC_ENF_ADR(index), RPFL2UC_EN, 1);
 
 	return 0;
 }
@@ -1083,10 +1116,10 @@ global_software_reset(struct aq_softc *sc)
 {
 	uint32_t v;
 
-	AQ_AND_REG(sc, HW_ATL_RX_REG_RES_DSBL_ADR, ~__BIT(29));	/* RX disable */
-	AQ_AND_REG(sc, HW_ATL_TX_REG_RES_DSBL_ADR, ~__BIT(29));	/* TX disable */
+	AQ_WRITE_REG_BIT(sc, HW_ATL_RX_REG_RES_DSBL_ADR, __BIT(29), 0);	/* RX disable */
+	AQ_WRITE_REG_BIT(sc, HW_ATL_TX_REG_RES_DSBL_ADR, __BIT(29), 0);	/* TX disable */
 
-	AQ_AND_REG(sc, MPI_TX_REG_RES_DIS_ADR, ~__BIT(29));
+	AQ_WRITE_REG_BIT(sc, MPI_TX_REG_RES_DIS_ADR, __BIT(29), 0);
 
 	v = AQ_READ_REG(sc, GLB_STANDARD_CTL1_ADR);
 	v &= ~GLB_REG_RES_DIS_MSK;
@@ -1328,13 +1361,13 @@ aq_hw_reset(struct aq_softc *sc)
 	int error;
 
 	/* disable irq */
-	AQ_AND_REG(sc, AQ_INTR_CTRL, ~__BIT(29));
+	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_RESET_DISABLE, 0);
 
 	/* apply */
-	AQ_OR_REG(sc, AQ_INTR_CTRL, __BIT(31));
+	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_RESET_IRQ, 1);
 
 	/* wait ack 10 times by 1ms */
-	WAIT_FOR((AQ_READ_REG(sc, AQ_INTR_CTRL) & __BIT(31)) == 0,
+	WAIT_FOR((AQ_READ_REG(sc, AQ_INTR_CTRL) & AQ_INTR_CTRL_RESET_IRQ) == 0,
 	    1000, 10, &error);
 	if (error != 0) {
 		aprint_error_dev(sc->sc_dev,
@@ -1749,7 +1782,7 @@ aq_hw_init_tx_path(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, TX_DMA_INT_DESC_WRWB_EN_ADR, TX_DMA_INT_MOD_EN, 0);
 
 	//XXX
-	for (int i = 0; i < AQ_TXRING_NUM; i++) {
+	for (int i = 0; i < sc->sc_txringnum; i++) {
 		AQ_WRITE_REG(sc, TX_INTR_MODERATION_CTL_ADR(i), 0);
 		AQ_WRITE_REG(sc, RX_INTR_MODERATION_CTL_ADR(i), 0);
 	}
@@ -1763,43 +1796,11 @@ aq_hw_init_tx_path(struct aq_softc *sc)
 
 	/* misc */
 	AQ_WRITE_REG(sc, 0x7040, (sc->sc_features & FEATURES_TPO2) ? __BIT(16) : 0);
-	AQ_AND_REG(sc, TDM_DCA_ADR, ~TDM_DCA_EN);
-	AQ_AND_REG(sc, TDM_DCA_ADR, ~TDM_DCA_MODE);
+	AQ_WRITE_REG_BIT(sc, TDM_DCA_ADR, TDM_DCA_EN, 0);
+	AQ_WRITE_REG_BIT(sc, TDM_DCA_ADR, TDM_DCA_MODE, 0);
 
 	AQ_OR_REG(sc, TPB_TX_BUF_ADR, TPB_TX_BUF_SCP_INS_EN);
-
-
-
 }
-
-#define TPS_DESC_VM_ARB_MODE_ADR		0x7300
-#define  TPS_DESC_VM_ARB_MODE_MSK		__BIT(0)
-#define TPS_DESC_RATE_REG			0x7310
-#define  TPS_DESC_RATE_TA_RST			__BIT(31)
-#define  TPS_DESC_RATE_LIM			__BITS(10,0)
-#define TPS_DESC_TC_ARB_MODE_ADR		0x7200
-#define  TPS_DESC_TC_ARB_MODE_MSK		__BITS(1,0)
-#define TPS_DATA_TC_ARB_MODE_ADR		0x7100
-#define  TPS_DATA_TC_ARB_MODE_MSK		__BIT(0)
-#define TPS_DATA_TCTCREDIT_MAX_ADR(tc)		(0x7110 + (tc) * 0x4)
-#define  TPS_DATA_TCTCREDIT_MAX_MSK		__BITS(16,27)
-#define TPS_DATA_TCTWEIGHT_ADR(tc)		TPS_DATA_TCTCREDIT_MAX_ADR(tc)
-#define  TPS_DATA_TCTWEIGHT_MSK			__BITS(8,0)
-#define TPS_DESC_TCTCREDIT_MAX_ADR(tc)		(0x7210 + (tc) * 0x4)
-#define  TPS_DESC_TCTCREDIT_MAX_MSK		__BITS(16,27)
-#define TPS_DESC_TCTWEIGHT_ADR(tc)		TPS_DESC_TCTCREDIT_MAX_ADR(tc)
-#define  TPS_DESC_TCTWEIGHT_MSK			__BITS(8,0)
-
-#define AQ_HW_TXBUF_MAX		160
-#define AQ_HW_RXBUF_MAX		320
-
-#define TPB_TXBBUF_SIZE_ADR(buffer)		(0x7910 + (buffer) * 0x10)
-#define  TPB_TXBBUF_SIZE_MSK			__BITS(7,0)
-#define TPB_TXBHI_THRESH_ADR(buffer)		(0x7914 + (buffer) * 0x10)
-#define  TPB_TXBHI_THRESH_MSK			__BITS(16,28)
-#define TPB_TXBLO_THRESH_ADR(buffer)		(0x7914 + (buffer) * 0x10)
-#define  TPB_TXBLO_THRESH_MSK			__BITS(12,0)
-
 
 static void
 aq_hw_qos_set(struct aq_softc *sc)
@@ -1878,32 +1879,23 @@ aq_hw_init(struct aq_softc *sc)
 	aq_hw_qos_set(sc);
 
 	/* Enable interrupt */
-#if 0
-	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_CLR_ON_READ, 0);
-	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_AUTO_MASK, 1);
-
-//	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_IRQMODE, 0);	/* MSIX */
-	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_IRQMODE, 1);	/* MSI */
-#else
-
-//		/* multivec   singlevec */
-//		{ 0x20000000, 0x20000000 },	/* invalid */
-//		{ 0x20000080, 0x20000080 },	/* legacy */
-//		{ 0x20000021, 0x20000025 },	/* MSI */
-//		{ 0x20000022, 0x20000026 },	/* MSIX */
-
-	AQ_WRITE_REG(sc, AQ_INTR_CTRL, 0x20000080);
+	AQ_WRITE_REG(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_RESET_DISABLE | AQ_INTR_CTRL_CLR_ON_READ);
 	AQ_WRITE_REG(sc, AQ_INTR_AUTOMASK, 0xffffffff);
+
+	int msix_mode = 0;	//XXX
+	if (msix_mode) {
+		AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_IRQMODE, AQ_INTR_CTRL_IRQMODE_MSIX);
+	} else {
+		AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_IRQMODE, AQ_INTR_CTRL_IRQMODE_MSI);
+	}
 
 	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_ADR(0),
 	    ((HW_ATL_B0_ERR_INT << 24) | (1 << 31)) |
 	    ((HW_ATL_B0_ERR_INT << 16) | (1 << 23))
 	);
-#endif
 
 	/* link interrupt */
-	int link_irq = 0;
-	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_ADR(3), __BIT(7) | link_irq);
+	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_ADR(3), __BIT(7) | LINKUP_IRQ);
 
 //	aq_hw_offload_set(hw);
 
@@ -1923,10 +1915,7 @@ aq_if_update_admin_status(struct aq_softc *sc)
 		sc->sc_link_speed = link_speed;
 
 		/* turn on/off RX Pause in RPB */
-		if (fc_neg.fc_rx)
-			AQ_OR_REG(sc, RPB_RXBXOFF_EN_ADR, RPB_RXBXOFF_EN);
-		else
-			AQ_AND_REG(sc, RPB_RXBXOFF_EN_ADR, ~RPB_RXBXOFF_EN);
+		AQ_WRITE_REG_BIT(sc, RPB_RXBXOFF_EN_ADR, RPB_RXBXOFF_EN, fc_neg.fc_rx ? 1 : 0);
 
 		aq_mediastatus_update(sc, link_speed, &fc_neg);
 
@@ -1939,7 +1928,7 @@ aq_if_update_admin_status(struct aq_softc *sc)
 		sc->sc_link_speed = 0;
 
 		/* turn off RX Pause in RPB */
-		AQ_AND_REG(sc, RPB_RXBXOFF_EN_ADR, ~RPB_RXBXOFF_EN);
+		AQ_WRITE_REG_BIT(sc, RPB_RXBXOFF_EN_ADR, RPB_RXBXOFF_EN, 0);
 
 		aq_mediastatus_update(sc, link_speed, &fc_neg);
 	}
@@ -2194,7 +2183,7 @@ aq_txrx_rings_alloc(struct aq_softc *sc)
 {
 	int n, error;
 
-	for (n = 0; n < AQ_TXRING_NUM; n++) {
+	for (n = 0; n < sc->sc_txringnum; n++) {
 		sc->sc_txring[n].ring_sc = sc;
 		sc->sc_txring[n].ring_index = n;
 		error = aq_txring_alloc(sc, &sc->sc_txring[n]);
@@ -2202,7 +2191,7 @@ aq_txrx_rings_alloc(struct aq_softc *sc)
 			goto failure;
 	}
 
-	for (n = 0; n < AQ_RXRING_NUM; n++) {
+	for (n = 0; n < sc->sc_rxringnum; n++) {
 		sc->sc_rxring[n].ring_sc = sc;
 		sc->sc_rxring[n].ring_index = n;
 		error = aq_rxring_alloc(sc, &sc->sc_rxring[n]);
@@ -2220,7 +2209,7 @@ dump_txrings(struct aq_softc *sc)
 	struct aq_txring *txring;
 	int n, i;
 
-	for (n = 0; n < AQ_TXRING_NUM; n++) {
+	for (n = 0; n < sc->sc_txringnum; n++) {
 		txring = &sc->sc_txring[n];
 
 		printf("# txring=%p (index=%d)\n", txring, txring->ring_index);
@@ -2248,7 +2237,7 @@ dump_rxrings(struct aq_softc *sc)
 	struct aq_rxring *rxring;
 	int n, i;
 
-	for (n = 0; n < AQ_RXRING_NUM; n++) {
+	for (n = 0; n < sc->sc_rxringnum; n++) {
 		rxring = &sc->sc_rxring[n];
 
 		printf("# rxring=%p (index=%d)\n", rxring, rxring->ring_index);
@@ -2267,10 +2256,10 @@ aq_txrx_rings_free(struct aq_softc *sc)
 {
 	int n;
 
-	for (n = 0; n < AQ_TXRING_NUM; n++)
+	for (n = 0; n < sc->sc_txringnum; n++)
 		aq_txring_free(sc, &sc->sc_txring[n]);
 
-	for (n = 0; n < AQ_RXRING_NUM; n++)
+	for (n = 0; n < sc->sc_rxringnum; n++)
 		aq_rxring_free(sc, &sc->sc_rxring[n]);
 }
 
@@ -2288,12 +2277,34 @@ static int
 aq_intr(void *arg)
 {
 	struct aq_softc *sc __unused = arg;
+	uint32_t status;
 
-	printf("######################### %s:%d: INTR_MASK/INTR_STATUS=%08x/%08x\n", __func__, __LINE__, AQ_READ_REG(sc, AQ_INTR_MASK), AQ_READ_REG(sc, AQ_INTR_STATUS));
-	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR, AQ_READ_REG(sc, AQ_INTR_STATUS));
+	status = AQ_READ_REG(sc, AQ_INTR_STATUS);	/* clear on read */
+
+	printf("######################### %s:%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, __LINE__, AQ_READ_REG(sc, AQ_INTR_MASK), status, AQ_READ_REG(sc, AQ_INTR_STATUS));
+
 	return 0;
 }
 
+/* Interrupt enable / disable */
+static void
+aq_enable_intr(struct aq_softc *sc, bool linkup, bool txrx)
+{
+	/* Enable interrupts */
+	if (txrx) {
+		/* including linkup intr */
+		AQ_WRITE_REG(sc, AQ_INTR_MASK, 0xffffffff);
+	} else if (linkup) {
+		/* only linkup intr */
+		AQ_WRITE_REG(sc, AQ_INTR_MASK, __BIT(LINKUP_IRQ));
+	} else {
+		AQ_WRITE_REG(sc, AQ_INTR_MASK, 0);
+	}
+
+	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR, 0xffffffff);	//XXX
+
+	printf("%s:%d: INTR_MASK/INTR_STATUS=%08x/%08x\n", __func__, __LINE__, AQ_READ_REG(sc, AQ_INTR_MASK), AQ_READ_REG(sc, AQ_INTR_STATUS));
+}
 
 static const struct aq_product *
 aq_lookup(const struct pci_attach_args *pa)
@@ -2378,6 +2389,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 	}
 	aprint_normal_dev(self, "interrupting at %s\n", intrstr);
 
+	sc->sc_txringnum = AQ_TXRING_NUM;
+	sc->sc_rxringnum = AQ_RXRING_NUM;
 	error = aq_txrx_rings_alloc(sc);
 	if (error != 0)
 		goto attach_failure;
@@ -2403,14 +2416,19 @@ aq_attach(device_t parent, device_t self, void *aux)
 	if (error != 0)
 		goto attach_failure;
 
+	aq_get_mac_addr(sc);
+
+	error = aq_hw_init(sc);	/* initialize and interrupts */
+	if (error != 0)
+		goto attach_failure;
+
+
 	sc->sc_media_type = aqp->aq_media_type;
 	sc->sc_available_rates = aqp->aq_available_rates;
 	sc->sc_link_rate = AQ_FW_SPEED_AUTO;
 	sc->sc_fc.fc_rx = true;
 	sc->sc_fc.fc_tx = true;
 	sc->sc_link_speed = 0;
-
-	aq_get_mac_addr(sc);
 
 	sc->sc_ethercom.ec_ifmedia = &sc->sc_media;
 	ifmedia_init(&sc->sc_media, IFM_IMASK,
@@ -2437,6 +2455,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 	if_attach(ifp);
 	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, sc->sc_enaddr.ether_addr_octet);
+
+	aq_enable_intr(sc, true, false);
 
 	/* media update */
 	aq_hw_set_link_speed(sc, sc->sc_link_rate);
@@ -2484,6 +2504,7 @@ aq_detach(device_t self, int flags __unused)
 		sc->sc_iosize = 0;
 	}
 
+	callout_stop(&sc->sc_tick_ch);
 	mutex_destroy(&sc->sc_mutex);
 
 	return 0;
@@ -2506,23 +2527,6 @@ aq_ifmedia_status(struct ifnet * const ifp, struct ifmediareq *req)
 	aq_mediastatus(ifp, req);
 }
 
-/* Interrupt enable / disable */
-static void
-aq_if_enable_intr(struct aq_softc *sc)
-{
-	/* Enable interrupts */
-	AQ_WRITE_REG(sc, AQ_INTR_MASK, __BIT(0));		//XXX
-	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR, 0xffffffff);	//XXX
-}
-
-static void
-aq_if_disable_intr(struct aq_softc *sc)
-{
-	/* mask interrupts */
-	AQ_WRITE_REG(sc, AQ_INTR_MASK_CLR, 0xffffffff);
-}
-
-
 static void
 aq_txring_init(struct aq_softc *sc, struct aq_txring *txring, bool enable_dma)
 {
@@ -2542,7 +2546,7 @@ aq_txring_init(struct aq_softc *sc, struct aq_txring *txring, bool enable_dma)
 	}
 
 	/* disable DMA once */
-	AQ_AND_REG(sc, TX_DMA_DESC_LEN_ADR(ringidx), ~TX_DMA_DESC_LEN_ENABLE);
+	AQ_WRITE_REG_BIT(sc, TX_DMA_DESC_LEN_ADR(ringidx), TX_DMA_DESC_LEN_ENABLE, 0);
 	if (enable_dma) {
 		/* TX descriptor physical address */
 		paddr_t paddr = txring->ring_txdesc_dmamap->dm_segs[0].ds_addr;
@@ -2558,7 +2562,7 @@ aq_txring_init(struct aq_softc *sc, struct aq_txring *txring, bool enable_dma)
 		AQ_WRITE_REG(sc, TX_DMA_DESC_WRWB_THRESH_ADR(ringidx), 0);
 
 		/* irq map */
-		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_TX_ADR(ringidx), AQ_INTR_IRQ_MAP_TX_MSK(ringidx), 0);
+		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_TX_ADR(ringidx), AQ_INTR_IRQ_MAP_TX_MSK(ringidx), ringidx);
 		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_TX_ADR(ringidx), AQ_INTR_IRQ_MAP_TX_EN_MSK(ringidx), true);
 
 		/* enable DMA */
@@ -2617,18 +2621,6 @@ aq_rxring_init(struct aq_softc *sc, struct aq_rxring *rxring, bool enable_dma)
 
 static void
 aq_rxring_start(struct aq_softc *sc, struct aq_rxring *rxring)
-{
-	//XXX
-}
-
-static void
-aq_txring_intr_enable(struct aq_softc *sc, struct aq_txring *txring)
-{
-	//XXX
-}
-
-static void
-aq_rxring_intr_enable(struct aq_softc *sc, struct aq_rxring *rxring)
 {
 	//XXX
 }
@@ -2719,29 +2711,21 @@ static int
 aq_init(struct ifnet *ifp)
 {
 	struct aq_softc *sc = ifp->if_softc;
-	int n, error;
+	int n;
 
 	//XXX: need lock
 	printf("%s:%d\n", __func__, __LINE__);
 
-	error = aq_hw_init(sc);	/* initialize, and enable intr */
-	if (error != 0) {
-		aprint_error_dev(sc->sc_dev, "aq_init failure\n");
-		goto done;
-	}
-
 //	aq_update_vlan_filters()
 
-	for (n = 0; n < AQ_TXRING_NUM; n++) {
+	for (n = 0; n < sc->sc_txringnum; n++) {
 		aq_txring_init(sc, &sc->sc_txring[n], true);
-		aq_txring_intr_enable(sc, &sc->sc_txring[n]);
 	}
 
 	AQ_OR_REG(sc, TPB_TX_BUF_ADR, TPB_TX_BUF_EN);
 
-	for (n = 0; n < AQ_RXRING_NUM; n++) {
+	for (n = 0; n < sc->sc_rxringnum; n++) {
 		aq_rxring_init(sc, &sc->sc_rxring[n], true);
-		aq_rxring_intr_enable(sc, &sc->sc_rxring[n]);
 		aq_rxring_start(sc, &sc->sc_rxring[n]);
 	}
 
@@ -2753,17 +2737,19 @@ aq_init(struct ifnet *ifp)
 
 
 //	aq_hw_start();
-	aq_if_enable_intr(sc);
+	aq_enable_intr(sc, true, true);
 //	aq_hw_rss_hash_set();
 //	aq_hw_rss_set();
 //	aq_hw_udp_rss_enable();
+
+	/* for resume */
+	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
 
 	/* ready */
 	ifp->if_flags |= IFF_RUNNING;
 	ifp->if_flags &= ~IFF_OACTIVE;
 
- done:
-	return error;
+	return 0;
 }
 
 static void
@@ -2830,23 +2816,28 @@ aq_stop(struct ifnet *ifp, int disable)
 	int i;
 
 	//XXX: need lock
-	printf("%s:%d\n", __func__, __LINE__);
+	printf("%s:%d: disable=%d\n", __func__, __LINE__, disable);
 
-	aq_if_disable_intr(sc);
+	/* disable interrupts */
+	aq_enable_intr(sc, false, false);
 
-	for (i = 0; i < AQ_TXRING_NUM; i++) {
+	for (i = 0; i < sc->sc_txringnum; i++) {
 		aq_txring_init(sc, &sc->sc_txring[i], false);
 	}
-	for (i = 0; i < AQ_RXRING_NUM; i++) {
+	for (i = 0; i < sc->sc_rxringnum; i++) {
 		aq_rxring_init(sc, &sc->sc_rxring[i], false);
 	}
 
-	aq_hw_reset(sc);
 	ifp->if_timer = 0;
 
 	//XXX
-
-	callout_stop(&sc->sc_tick_ch);
+	if (disable) {
+		/* ifconfig down, but linkup intr is enabled */
+		aq_enable_intr(sc, true, false);
+	} else {
+		/* pmf stop, disable callout */
+		callout_stop(&sc->sc_tick_ch);
+	}
 
 	ifp->if_flags &= ~(IFF_RUNNING | IFF_OACTIVE);
 }
@@ -2855,6 +2846,10 @@ static void
 aq_watchdog(struct ifnet *ifp)
 {
 	printf("%s:%d: XXX: not implemented\n", __func__, __LINE__);
+
+//	aq_hw_reset(sc);
+//	aq_hw_init(sc);
+
 	//XXX
 }
 
