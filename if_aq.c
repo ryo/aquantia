@@ -148,12 +148,21 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define AQ_HW_PCI_REG_CONTROL_6_ADR		0x1014
 
-#define ITR_ISRLSW_ADR				0x2000	/* intr status */
-#define ITR_ISCRLSW_ADR				0x2050	/* intr status clear */
-#define ITR_IMSRLSW_ADR				0x2060	/* intr set */
-#define ITR_IMCRLSW_ADR				0x2070	/* intr clear */
+// msix bitmap */
+#define AQ_INTR_STATUS				0x2000	/* intr status */
+#define AQ_INTR_STATUS_CLR			0x2050	/* intr status clear */
+#define AQ_INTR_MASK				0x2060	/* intr mask set */
+#define AQ_INTR_MASK_CLR			0x2070	/* intr mask clear */
+#define AQ_INTR_AUTOMASK			0x2090
+
+#define AQ_GEN_INTR_MAP_ADR(i)			(0x2180 + (i) * 0x4)
+#define  HW_ATL_B0_ERR_INT			8
 
 #define AQ_INTR_CTRL				0x2300
+#define  AQ_INTR_IRQMODE			__BITS(1,0)
+#define  AQ_INTR_CTRL_CLR_ON_READ		__BIT(7)
+#define  AQ_INTR_CTRL_AUTO_MASK			__BIT(5)
+
 //#define ITR_REG_RES_DSBL_ADR			AQ_INTR_CTRL
 //#define ITR_RES_ADR				AQ_INTR_CTRL
 
@@ -175,15 +184,17 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define RPB_RXBXOFF_EN_ADR			0x5714
 #define  RPB_RXBXOFF_EN				__BIT(31)
 
+#define RX_INTR_MODERATION_CTL_ADR(n)		(0x5a40 + (n) * 0x4)
+
 #define RX_DMA_STAT_COUNTER7_ADR		0x6818
 #define STATS_RX_LO_COALESCED_PKT_COUNT0_ADDR	0x6820
 
 #define HW_ATL_TX_REG_RES_DSBL_ADR		0x7000
 
 #define AQ_HW_TX_DMA_TOTAL_REQ_LIMIT_ADR	0x7b20
-#define TDM_INT_DESC_WRB_EN_ADR			0x7b40
-#define  TDM_INT_DESC_WRB_EN			__BIT(1)
-
+#define TX_DMA_INT_DESC_WRWB_EN_ADR		0x7b40
+#define  TX_DMA_INT_DESC_WRWB_EN		__BIT(1)
+#define  TX_DMA_INT_MOD_EN			__BIT(4)
 
 #define THM_LSO_TCP_FLAG_FIRST_ADR		0x7820
 #define THM_LSO_TCP_FLAG_MID_ADR		THM_LSO_TCP_FLAG_FIRST_ADR
@@ -218,6 +229,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TDM_DCA_EN				__BIT(31)
 #define  TDM_DCA_MODE				__BITS(3,0)
 
+#define TX_INTR_MODERATION_CTL_ADR(n)		(0x8980 + (n) * 0x4)
 
 
 #define AQ_LINK_UNKNOWN	0x00000000
@@ -1727,7 +1739,23 @@ aq_hw_init_tx_path(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, THM_LSO_TCP_FLAG_LAST_ADR,  THM_LSO_TCP_FLAG_LAST_MSK,  0x0f7f);
 
 	/* Tx interrupts */
-	AQ_OR_REG(sc, TDM_INT_DESC_WRB_EN_ADR, TDM_INT_DESC_WRB_EN);
+#if 1
+	/* moderation off */
+	AQ_WRITE_REG_BIT(sc, TX_DMA_INT_DESC_WRWB_EN_ADR, TX_DMA_INT_DESC_WRWB_EN, 1);
+	AQ_WRITE_REG_BIT(sc, TX_DMA_INT_DESC_WRWB_EN_ADR, TX_DMA_INT_MOD_EN, 0);
+
+	//XXX
+	for (int i = 0; i < AQ_TXRING_NUM; i++) {
+		AQ_WRITE_REG(sc, TX_INTR_MODERATION_CTL_ADR(i), 0);
+		AQ_WRITE_REG(sc, RX_INTR_MODERATION_CTL_ADR(i), 0);
+	}
+
+#else
+//	/* moderation on */
+//	AQ_WRITE_REG_BIT(sc, TX_DMA_INT_DESC_WRWB_EN_ADR, TX_DMA_INT_DESC_WRWB_EN, 0);
+//	AQ_WRITE_REG_BIT(sc, TX_DMA_INT_DESC_WRWB_EN_ADR, TX_DMA_INT_MOD_EN, 1);
+//	//XXX: need more seetings
+#endif
 
 	/* misc */
 	AQ_WRITE_REG(sc, 0x7040, (sc->sc_features & FEATURES_TPO2) ? __BIT(16) : 0);
@@ -1735,6 +1763,9 @@ aq_hw_init_tx_path(struct aq_softc *sc)
 	AQ_AND_REG(sc, TDM_DCA_ADR, ~TDM_DCA_MODE);
 
 	AQ_OR_REG(sc, TPB_TX_BUF_ADR, TPB_TX_BUF_SCP_INS_EN);
+
+
+
 }
 
 #define TPS_DESC_VM_ARB_MODE_ADR		0x7300
@@ -1842,15 +1873,33 @@ aq_hw_init(struct aq_softc *sc)
 
 	aq_hw_qos_set(sc);
 
-//	/* Enable interrupt */
-//	itr_irq_status_cor_en_set(hw, 0); //Disable clear-on-read for status
-//	itr_irq_auto_mask_clr_en_set(hw, 1); // Enable auto-mask clear.
-//		if (msix)
-//				itr_irq_mode_set(hw, 0x6); //MSIX + multi vector
-//		else
-//				itr_irq_mode_set(hw, 0x5); //MSI + multi vector
-//
-//	reg_gen_irq_map_set(hw, 0x80 | adm_irq, 3);
+	/* Enable interrupt */
+#if 0
+	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_CLR_ON_READ, 0);
+	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_AUTO_MASK, 1);
+
+//	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_IRQMODE, 0);	/* MSIX */
+	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_IRQMODE, 1);	/* MSI */
+#else
+
+//		/* multivec   singlevec */
+//		{ 0x20000000, 0x20000000 },	/* invalid */
+//		{ 0x20000080, 0x20000080 },	/* legacy */
+//		{ 0x20000021, 0x20000025 },	/* MSI */
+//		{ 0x20000022, 0x20000026 },	/* MSIX */
+
+	AQ_WRITE_REG(sc, AQ_INTR_CTRL, 0x20000080);
+	AQ_WRITE_REG(sc, AQ_INTR_AUTOMASK, 0xffffffff);
+
+	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_ADR(0),
+	    ((HW_ATL_B0_ERR_INT << 24) | (1 << 31)) |
+	    ((HW_ATL_B0_ERR_INT << 16) | (1 << 23))
+	);
+#endif
+
+	/* link interrupt */
+	int link_irq = 0;
+	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_ADR(3), __BIT(7) | link_irq);
 
 //	aq_hw_offload_set(hw);
 
@@ -1900,7 +1949,7 @@ aq_if_update_admin_status(struct aq_softc *sc)
 #define ADD_DELTA(cur,prev,name,descr)	\
 		do {															\
 			uint64_t n = (uint32_t)(sc->sc_statistics[cur].name - sc->sc_statistics[prev].name);				\
-			/* printf("# %s: %s: %u\n", descr, #name, sc->sc_statistics[cur].name); /**/					\
+			/* printf("# %s: %s: %u\n", descr, #name, sc->sc_statistics[cur].name); */					\
 			if (n != 0) {													\
 				printf("====================%s: %s: %lu -> %lu (+%lu)\n", descr, #name, sc->sc_statistics_ ## name, sc->sc_statistics_ ## name + n, n);	\
 			}														\
@@ -2181,8 +2230,9 @@ dump_txrings(struct aq_softc *sc)
 
 			printf("txring->ring_mbufs [%d].m        = %p\n", i, txring->ring_mbufs[i].m);
 			printf("txring->ring_txdesc[%d].buf_addr = %08lx\n", i, txring->ring_txdesc[i].buf_addr);
-			printf("txring->ring_txdesc[%d].ctl  = %08x%s\n", i, txring->ring_txdesc[i].ctl,
-			    (txring->ring_txdesc[i].ctl & AQ_TXDESC_CTL_EOP) ? " EOP" : "");
+			printf("txring->ring_txdesc[%d].ctl  = %08x%s%s\n", i, txring->ring_txdesc[i].ctl,
+			    (txring->ring_txdesc[i].ctl & AQ_TXDESC_CTL_EOP) ? " EOP" : "",
+			    (txring->ring_txdesc[i].ctl & AQ_TXDESC_CTL_CMD_WB) ? " WB" : "");
 			printf("txring->ring_txdesc[%d].ctl2 = %08x\n", i, txring->ring_txdesc[i].ctl2);
 		}
 	}
@@ -2235,7 +2285,8 @@ aq_intr(void *arg)
 {
 	struct aq_softc *sc __unused = arg;
 
-	printf("!!!!!!!!!!!!!!!!!!!!!!!!!!!%s\n", __func__);
+	printf("######################### %s:%d: INTR_MASK/INTR_STATUS=%08x/%08x\n", __func__, __LINE__, AQ_READ_REG(sc, AQ_INTR_MASK), AQ_READ_REG(sc, AQ_INTR_STATUS));
+	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR, AQ_READ_REG(sc, AQ_INTR_STATUS));
 	return 0;
 }
 
@@ -2451,20 +2502,86 @@ aq_ifmedia_status(struct ifnet * const ifp, struct ifmediareq *req)
 	aq_mediastatus(ifp, req);
 }
 
-///* Interrupt enable / disable */
-//static void
-//aq_if_enable_intr(struct aq_softc *sc)
-//{
-//	/* Enable interrupts */
-//	AQ_WRITE_REG(sc, ITR_IMSRLSW_ADR, __BIT(0));	// XXX
-//}
+/* Interrupt enable / disable */
+static void
+aq_if_enable_intr(struct aq_softc *sc)
+{
+	/* Enable interrupts */
+	AQ_WRITE_REG(sc, AQ_INTR_MASK, __BIT(0));		//XXX
+	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR, 0xffffffff);	//XXX
+}
 
 static void
 aq_if_disable_intr(struct aq_softc *sc)
 {
 	/* mask interrupts */
-	AQ_WRITE_REG(sc, ITR_IMCRLSW_ADR, 0xffffffff);
+	AQ_WRITE_REG(sc, AQ_INTR_MASK_CLR, 0xffffffff);
 }
+
+static void
+intr_irq_map_tx_set(struct aq_softc *sc, uint32_t irq_map_tx, uint32_t tx)
+{
+	/* register address for bitfield imr_tx{t}[4:0] */
+	static uint32_t itr_imr_txt_adr[32] = {
+		0x00002100, 0x00002100, 0x00002104, 0x00002104,
+		0x00002108, 0x00002108, 0x0000210C, 0x0000210C,
+		0x00002110, 0x00002110, 0x00002114, 0x00002114,
+		0x00002118, 0x00002118, 0x0000211C, 0x0000211C,
+		0x00002120, 0x00002120, 0x00002124, 0x00002124,
+		0x00002128, 0x00002128, 0x0000212C, 0x0000212C,
+		0x00002130, 0x00002130, 0x00002134, 0x00002134,
+		0x00002138, 0x00002138, 0x0000213C, 0x0000213C
+	};
+
+	/* bitmask for bitfield imr_tx{t}[4:0] */
+	static uint32_t itr_imr_txt_msk[32] = {
+		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
+		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
+		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
+		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
+		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
+		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
+		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000,
+		0x1f000000, 0x001F0000, 0x1F000000, 0x001F0000
+	};
+
+	AQ_WRITE_REG_BIT(sc, itr_imr_txt_adr[tx],
+	    itr_imr_txt_msk[tx],
+	    irq_map_tx);
+}
+
+static void
+intr_irq_map_en_tx_set(struct aq_softc *sc, uint32_t irq_map_en_tx, uint32_t tx)
+{
+	/* register address for bitfield imr_tx{t}_en */
+	static uint32_t itr_imr_txten_adr[32] = {
+		0x00002100, 0x00002100, 0x00002104, 0x00002104,
+		0x00002108, 0x00002108, 0x0000210C, 0x0000210C,
+		0x00002110, 0x00002110, 0x00002114, 0x00002114,
+		0x00002118, 0x00002118, 0x0000211C, 0x0000211C,
+		0x00002120, 0x00002120, 0x00002124, 0x00002124,
+		0x00002128, 0x00002128, 0x0000212C, 0x0000212C,
+		0x00002130, 0x00002130, 0x00002134, 0x00002134,
+		0x00002138, 0x00002138, 0x0000213C, 0x0000213C
+	};
+
+	/* bitmask for bitfield imr_tx{t}_en */
+	static uint32_t itr_imr_txten_msk[32] = {
+		0x80000000, 0x00800000, 0x80000000, 0x00800000,
+		0x80000000, 0x00800000, 0x80000000, 0x00800000,
+		0x80000000, 0x00800000, 0x80000000, 0x00800000,
+		0x80000000, 0x00800000, 0x80000000, 0x00800000,
+		0x80000000, 0x00800000, 0x80000000, 0x00800000,
+		0x80000000, 0x00800000, 0x80000000, 0x00800000,
+		0x80000000, 0x00800000, 0x80000000, 0x00800000,
+		0x80000000, 0x00800000, 0x80000000, 0x00800000
+	};
+
+	AQ_WRITE_REG_BIT(sc, itr_imr_txten_adr[tx],
+	    itr_imr_txten_msk[tx],
+	    irq_map_en_tx);
+}
+
 
 static void
 aq_txring_init(struct aq_softc *sc, struct aq_txring *txring, bool enable_dma)
@@ -2497,15 +2614,20 @@ aq_txring_init(struct aq_softc *sc, struct aq_txring *txring, bool enable_dma)
 		    __SHIFTIN(sizeof(aq_tx_desc_t) * AQ_TXD_NUM, TX_DMA_DESC_LEN_MSK));
 
 		AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(ringidx), 0);
+
 		AQ_WRITE_REG(sc, TX_DMA_DESC_WRWB_THRESH_ADR(ringidx), 0);
+
+		/* irq map */
+		intr_irq_map_tx_set(sc, 0, ringidx);	//XXX
+		intr_irq_map_en_tx_set(sc, true, ringidx);	//XXX
 
 		/* enable DMA */
 		AQ_OR_REG(sc, TX_DMA_DESC_LEN_ADR(ringidx),
 		    TX_DMA_DESC_LEN_ENABLE);
 
 		const int cpuid = 0;	//XXX
-		AQ_WRITE_REG(sc, TDM_DCADCPUID_ADR(ringidx),
-		    __SHIFTIN(cpuid, TDM_DCADCPUID_MSK));
+		AQ_WRITE_REG_BIT(sc, TDM_DCADCPUID_ADR(ringidx), TDM_DCADCPUID_MSK, cpuid);
+		AQ_WRITE_REG_BIT(sc, TDM_DCADCPUID_ADR(ringidx), TDM_DCADCPUID_EN, 0);
 	}
 }
 
@@ -2627,7 +2749,8 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 		if (i == map->dm_nsegs - 1) {
 			/* EndOfPacket. mark last segment */
 			txring->ring_txdesc[idx].ctl |=
-			    AQ_TXDESC_CTL_EOP;
+			    AQ_TXDESC_CTL_EOP |
+			    AQ_TXDESC_CTL_CMD_WB;
 		}
 
 		 printf("%s:%d: write txdesc[%3d] %d/%d buf_addr=%012lx, len=%-5lu ctl=%08x ctl2=%08x%s\n", __func__, __LINE__, idx,
@@ -2636,8 +2759,7 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 		     map->dm_segs[i].ds_len,
 		    txring->ring_txdesc[idx].ctl,
 		    txring->ring_txdesc[idx].ctl2,
-		     (i == map->dm_nsegs - 1) ? " EOP" : "");
-
+		     (i == map->dm_nsegs - 1) ? " EOP/WB" : "");
 
 		bus_dmamap_sync(sc->sc_dmat, txring->ring_txdesc_dmamap,
 		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
@@ -2691,7 +2813,7 @@ aq_init(struct ifnet *ifp)
 
 
 //	aq_hw_start();
-//	aq_if_enable_intr();
+	aq_if_enable_intr(sc);
 //	aq_hw_rss_hash_set();
 //	aq_hw_rss_set();
 //	aq_hw_udp_rss_enable();
@@ -2723,6 +2845,8 @@ aq_start(struct ifnet *ifp)
 	txring = &sc->sc_txring[0];	// select TX ring
 
  printf("%s:%d: ringidx=%d, HEAD_PTR=%lu\n", __func__, __LINE__, txring->ring_index, AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_DHD_MASK));
+
+ printf("%s:%d: INTR_MASK/INTR_STATUS=%08x/%08x\n", __func__, __LINE__, AQ_READ_REG(sc, AQ_INTR_MASK), AQ_READ_REG(sc, AQ_INTR_STATUS));
 
 	for (npkt = 0; ; npkt++) {
 		IFQ_POLL(&ifp->if_snd, m);
