@@ -1145,7 +1145,7 @@ aq_initmedia(struct aq_softc *sc)
 
 	aq_add_media_types(sc, IFM_AUTO);
 
-//	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO | IFM_FLOW);	// XXX: doesn't work?
+//	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO | IFM_FLOW);
 	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO);
 }
 
