@@ -2016,28 +2016,28 @@ _alloc_dma(struct aq_softc *sc, bus_size_t size, bus_size_t *sizep,
 	int nsegs, error;
 
 	if ((error = bus_dmamem_alloc(sc->sc_dmat, size, PAGE_SIZE, 0, seg,
-	    1, &nsegs, M_NOWAIT)) != 0) {
+	    1, &nsegs, 0)) != 0) {
 		aprint_error_dev(sc->sc_dev,
 		    "unable to allocate DMA buffer, error=%d\n", error);
 		goto fail_alloc;
 	}
 
 	if ((error = bus_dmamem_map(sc->sc_dmat, seg, 1, size, addrp,
-	    BUS_DMA_NOWAIT | BUS_DMA_COHERENT)) != 0) {
+	    BUS_DMA_COHERENT)) != 0) {
 		aprint_error_dev(sc->sc_dev,
 		    "unable to map DMA buffer, error=%d\n", error);
 		goto fail_map;
 	}
 
 	if ((error = bus_dmamap_create(sc->sc_dmat, size, 1, size, 0,
-	    BUS_DMA_NOWAIT, mapp)) != 0) {
+	    0, mapp)) != 0) {
 		aprint_error_dev(sc->sc_dev,
 		    "unable to create DMA map, error=%d\n", error);
 		goto fail_create;
 	}
 
 	if ((error = bus_dmamap_load(sc->sc_dmat, *mapp, *addrp, size, NULL,
-	    BUS_DMA_NOWAIT)) != 0) {
+	    0)) != 0) {
 		aprint_error_dev(sc->sc_dev,
 		    "unable to load DMA map, error=%d\n", error);
 		goto fail_load;
