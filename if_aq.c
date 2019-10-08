@@ -1858,8 +1858,8 @@ aq_hw_qos_set(struct aq_softc *sc)
 	buff_size = AQ_HW_TXBUF_MAX;
 
 	AQ_WRITE_REG_BIT(sc, TPB_TXBBUF_SIZE_ADR(tc), TPB_TXBBUF_SIZE_MSK, buff_size);
-	AQ_WRITE_REG_BIT(sc, TPB_TXBHI_THRESH_ADR(tc), TPB_TXBHI_THRESH_MSK, (buff_size * (1024 / 32U) * 66U) / 100);
-	AQ_WRITE_REG_BIT(sc, TPB_TXBLO_THRESH_ADR(tc), TPB_TXBLO_THRESH_MSK, (buff_size * (1024 / 32U) * 50U) / 100);
+	AQ_WRITE_REG_BIT(sc, TPB_TXBHI_THRESH_ADR(tc), TPB_TXBHI_THRESH_MSK, (buff_size * (1024 / 32) * 66) / 100);
+	AQ_WRITE_REG_BIT(sc, TPB_TXBLO_THRESH_ADR(tc), TPB_TXBLO_THRESH_MSK, (buff_size * (1024 / 32) * 50) / 100);
 
 //	/* QoS Rx buf size per TC */
 //	tc = 0;
