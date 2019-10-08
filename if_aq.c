@@ -6,10 +6,12 @@
 
 	XXX_TXD_XXX
 		TXD_NUMを32以外にすると不安定。なんで??
+		→4095にするとなんか安定した。謎。4096だとおかしい?
 
 	XXX_IFMEDIA_XXX
 		mediaが不安定。出ない場合がある。ifconfig aq0 down upして何度かやってmediaが一致すると安定する?
 		起動後は大抵不安定。
+		→どうもpause frameとwmの相性問題っぽい。謎。wmがunknown ethertypeを受信しない感じ。ierrorになる? 何故?
 #endif
 
 #define XXX_TXDESC0_HACK
