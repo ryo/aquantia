@@ -13,6 +13,7 @@
 #endif
 
 #define XXX_TXDESC0_HACK
+#define XXX_DEBUG_PMAP_EXTRACT
 
 
 
@@ -100,6 +101,11 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/systm.h>
 
 #include <machine/endian.h>
+
+#ifdef XXX_DEBUG_PMAP_EXTRACT
+#include <uvm/uvm_extern.h>
+#include <uvm/uvm.h>
+#endif
 
 #include <net/bpf.h>
 #include <net/if.h>
@@ -2090,6 +2096,27 @@ aq_txring_alloc(struct aq_softc *sc, struct aq_txring *txring)
 	    &txring->ring_txdesc_dmamap, txring->ring_txdesc_seg);
 	if (error != 0)
 		return error;
+
+#ifdef XXX_DEBUG_PMAP_EXTRACT
+	{
+		bool ok;
+		char *descp = (char *)txring->ring_txdesc;
+		paddr_t pa;
+		vaddr_t va;
+
+
+		printf("TX desc size = %lu\n", txring->ring_txdesc_size);
+		printf("TX desc DM_SEGS[0] = PA=%08lx\n", txring->ring_txdesc_dmamap->dm_segs[0].ds_addr);
+
+		for (i = 0; (bus_size_t)(PAGE_SIZE * i) < txring->ring_txdesc_size; i++) {
+			va = (vaddr_t)descp + PAGE_SIZE * i;
+			ok = pmap_extract(pmap_kernel(), va, &pa);
+			printf("TX desc VA=%lx, PA=%08lx, ok=%d\n", va, pa, ok);
+		}
+	}
+#endif
+
+
 
 	memset(txring->ring_txdesc, 0, sizeof(aq_tx_desc_t) * AQ_TXD_NUM);
 
