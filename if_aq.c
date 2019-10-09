@@ -1,9 +1,5 @@
 #if 0
 変な所
-	XXX_TXDESC0_HACK
-		TX descriptor[0] のパケットがうまく出ない。WB interruptもかからない。
-		それ以外にもたまにこぼしている?
-
 	XXX_TXD_XXX
 		TXD_NUMを32以外にすると不安定。なんで??
 		→4095にするとなんか安定した。謎。4096だとおかしい?
@@ -14,7 +10,6 @@
 		→どうもpause frameとwmの相性問題っぽい。謎。wmがunknown ethertypeを受信しない感じ。ierrorになる? 何故?
 #endif
 
-#define XXX_TXDESC0_HACK
 //#define XXX_FORCE_32BIT_PA
 //#define XXX_DEBUG_PMAP_EXTRACT
 
@@ -590,8 +585,8 @@ typedef struct aq_tx_desc {
 //#define AQ_RXRING_NUM	16	/* <= AQ_RINGS_MAX */
 #define AQ_TXRING_NUM	1	/* <= AQ_RINGS_MAX */
 #define AQ_RXRING_NUM	1	/* <= AQ_RINGS_MAX */
-#define AQ_TXD_NUM	4095	/* per ring */
-#define AQ_RXD_NUM	4095	/* per ring */
+#define AQ_TXD_NUM	4096	/* per ring. must be 8*n */
+#define AQ_RXD_NUM	4096	/* per ring. must be 8*n */
 
 #define LINKUP_IRQ	0
 
@@ -654,10 +649,6 @@ struct aq_softc {
 
 	void *sc_intrhand;
 
-#ifdef XXX_TXDESC0_HACK
-	struct mbuf *sc_dummy_m;
-	bus_dmamap_t sc_dummy_m_dmamap;
-#endif
 	struct aq_txring sc_txring[AQ_TXRING_NUM];
 	struct aq_rxring sc_rxring[AQ_RXRING_NUM];
 	int sc_txringnum;
@@ -2254,26 +2245,6 @@ aq_txrx_rings_alloc(struct aq_softc *sc)
 			goto failure;
 	}
 
-#ifdef  XXX_TXDESC0_HACK
-	// allocate dummy mbuf
-	{
-		struct mbuf *m;
-		MGETHDR(m, M_DONTWAIT, MT_DATA);
-		KASSERT(m != NULL);
-		MCLGET(m, M_DONTWAIT);
-		KASSERT((m->m_flags & M_EXT) != 0);
-		sc->sc_dummy_m = m;
-
-		bus_dmamap_create(sc->sc_dmat, AQ_MAXDMASIZE, 1,
-		    AQ_MAXDMASIZE, 0, 0,
-		    &sc->sc_dummy_m_dmamap);
-		error = bus_dmamap_load_mbuf(sc->sc_dmat,
-		    sc->sc_dummy_m_dmamap, m, BUS_DMA_NOWAIT);
-		KASSERT(error == 0);
-	}
-#endif
-
-
 	for (n = 0; n < sc->sc_rxringnum; n++) {
 		sc->sc_rxring[n].ring_sc = sc;
 		sc->sc_rxring[n].ring_index = n;
@@ -2666,7 +2637,7 @@ aq_txring_init(struct aq_softc *sc, struct aq_txring *txring, bool enable_dma)
 
 		/* TX descriptor size */
 		AQ_WRITE_REG_BIT(sc, TX_DMA_DESC_LEN_ADR(ringidx), TX_DMA_DESC_LEN_MSK,
-		    sizeof(aq_tx_desc_t) * AQ_TXD_NUM / 8);
+		    AQ_TXD_NUM / 8);
 
 		AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(ringidx), 0);
 		AQ_WRITE_REG(sc, TX_DMA_DESC_WRWB_THRESH_ADR(ringidx), 0);
@@ -2771,32 +2742,6 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	bus_dmamap_sync(sc->sc_dmat, map, 0, map->dm_mapsize,
 	    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
 
-#ifdef XXX_TXDESC0_HACK
-	if (idx == 0) {
-//		printf("%s:%d: write txdesc[%3d] (dummy)\n", __func__, __LINE__, idx);
-
-		// dummy packet
-		txring->ring_txdesc[idx].buf_addr = htole64(sc->sc_dummy_m_dmamap->dm_segs[0].ds_addr);
-		txring->ring_txdesc[idx].ctl =
-		    AQ_TXDESC_CTL_TYPE_TXD |
-		    __SHIFTIN(14, AQ_TXDESC_CTL_BLEN) |
-		    AQ_TXDESC_CTL_EOP |
-		    AQ_TXDESC_CTL_CMD_WB;
-		txring->ring_txdesc[idx].ctl2 =
-		    __SHIFTIN(14, AQ_TXDESC_CTL2_LEN);
-
-		txring->ring_mbufs[idx].m = NULL;
-
-		bus_dmamap_sync(sc->sc_dmat, txring->ring_txdesc_dmamap,
-		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
-		    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
-
-		idx = TXRING_NEXTIDX(idx);
-		txring->ring_nfree--;
-	}
-#endif
-
-
 	/* fill descriptor(s) */
 	for (i = 0; i < map->dm_nsegs; i++) {
 		txring->ring_txdesc[idx].buf_addr = htole64(map->dm_segs[i].ds_addr);
@@ -2852,13 +2797,22 @@ aq_tx_intr(struct aq_txring *txring, bool watchdog)
 
 	//XXX: need lock
 
+//	printf("%s:%d: ringidx=%d, TXDESC_(EN+)LEN=%08x\n", __func__, __LINE__,
+//	    txring->ring_index, AQ_READ_REG(sc, TX_DMA_DESC_LEN_ADR(txring->ring_index)));
+//	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u\n", __func__, __LINE__, txring->ring_index,
+//	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_DHD_MASK),
+//	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(txring->ring_index)));
+
 	for (idx = txring->ring_considx; idx != txring->ring_prodidx; idx = TXRING_NEXTIDX(idx)) {
 
 #if 0
-		printf("# %s:%d: txring=%d, TX CLEANUP: HEAD_PTR=%lu, prodidx=%d, idx=%d\n", __func__, __LINE__,
+		printf("# %s:%d: txring=%d, TX CLEANUP: HEAD/TAIL=%lu/%u, considx/prodidx=%d/%d, idx=%d\n", __func__, __LINE__,
 		    txring->ring_index,
 		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_DHD_MASK),
-		    txring->ring_prodidx, idx);
+		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(txring->ring_index)),
+		    txring->ring_considx,
+		    txring->ring_prodidx,
+		    idx);
 #endif
 
 #if 0
@@ -3008,7 +2962,7 @@ aq_start(struct ifnet *ifp)
 		if (txring->ring_nfree <= 0) {
 			/* no tx descriptor now... */
 			ifp->if_flags |= IFF_OACTIVE;
-			aprint_debug_dev(sc->sc_dev, "TX descriptor is full\n");
+			device_printf(sc->sc_dev, "TX descriptor is full\n");
 			break;
 		}
 
@@ -3016,31 +2970,24 @@ aq_start(struct ifnet *ifp)
 
 		if (aq_encap_txring(sc, txring, &m) != 0) {
 			/* too many mbuf chains? */
-			aprint_error_dev(sc->sc_dev,
-			    "TX descriptor is full. dropping packet\n");
+			device_printf(sc->sc_dev,
+			    "TX descriptor enqueueing failure. dropping packet\n");
 			m_freem(m);
 			ifp->if_oerrors++;
 			break;
 		}
 
-#define TXSTART_IMMEDIATELY
-
-#ifdef TXSTART_IMMEDIATELY
 		/* start TX DMA */
 		aq_txring_start(sc, txring);
-#endif
 
 		/* Pass the packet to any BPF listeners */
 		bpf_mtap(ifp, m, BPF_D_OUT);
 	}
 
-	if (npkt) {
-#ifndef TXSTART_IMMEDIATELY
-		/* start TX DMA */
-		aq_txring_start(sc, txring);
-#endif
+	if (npkt)
 		ifp->if_timer = 5;
-	}
+
+//	device_printf(sc->sc_dev, "ring[%d] %d/%d\n", txring->ring_index, AQ_TXD_NUM - txring->ring_nfree, AQ_TXD_NUM);
 }
 
 static void
@@ -3093,9 +3040,14 @@ aq_watchdog(struct ifnet *ifp)
 	for (n = 0; n < sc->sc_txringnum; n++) {
 		txring = &sc->sc_txring[n];
 
+#if 1
+		//DEBUG
+		printf("%s:%d: ringidx=%d, TXDESC_(EN+)LEN=%08x\n", __func__, __LINE__,
+		    txring->ring_index, AQ_READ_REG(sc, TX_DMA_DESC_LEN_ADR(txring->ring_index)));
 		printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u\n", __func__, __LINE__, txring->ring_index,
-		     AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_DHD_MASK),
-		     AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(txring->ring_index)));
+		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_DHD_MASK),
+		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(txring->ring_index)));
+#endif
 
 		aq_tx_intr(txring, true);
 	}
