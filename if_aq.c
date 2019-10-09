@@ -15,7 +15,8 @@
 #endif
 
 #define XXX_TXDESC0_HACK
-#define XXX_DEBUG_PMAP_EXTRACT
+//#define XXX_FORCE_32BIT_PA
+//#define XXX_DEBUG_PMAP_EXTRACT
 
 
 
@@ -2118,8 +2119,6 @@ aq_txring_alloc(struct aq_softc *sc, struct aq_txring *txring)
 	}
 #endif
 
-
-
 	memset(txring->ring_txdesc, 0, sizeof(aq_tx_desc_t) * AQ_TXD_NUM);
 
 	/* fill tx ring with dmamap */
@@ -2453,8 +2452,11 @@ aq_attach(device_t parent, device_t self, void *aux)
 #endif
 	sc->sc_pc = pc = pa->pa_pc;
 	sc->sc_pcitag = tag = pa->pa_tag;
-//	sc->sc_dmat = pci_dma64_available(pa) ? pa->pa_dmat64 : pa->pa_dmat;
+#ifdef XXX_FORCE_32BIT_PA
 	sc->sc_dmat = pa->pa_dmat;
+#else
+	sc->sc_dmat = pci_dma64_available(pa) ? pa->pa_dmat64 : pa->pa_dmat;
+#endif
 
 	sc->sc_product = PCI_PRODUCT(pa->pa_id);
 	sc->sc_revision = PCI_REVISION(pa->pa_class);
@@ -2797,7 +2799,6 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 
 	/* fill descriptor(s) */
 	for (i = 0; i < map->dm_nsegs; i++) {
-
 		txring->ring_txdesc[idx].buf_addr = htole64(map->dm_segs[i].ds_addr);
 		txring->ring_txdesc[idx].ctl =
 		    AQ_TXDESC_CTL_TYPE_TXD |
