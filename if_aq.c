@@ -2771,17 +2771,17 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 
 #ifdef XXX_TXDESC0_HACK
 	if (idx == 0) {
-//		 printf("%s:%d: write txdesc[%3d] (dummy)\n", __func__, __LINE__, idx);
+//		printf("%s:%d: write txdesc[%3d] (dummy)\n", __func__, __LINE__, idx);
 
 		// dummy packet
 		txring->ring_txdesc[idx].buf_addr = htole64(sc->sc_dummy_m_dmamap->dm_segs[0].ds_addr);
 		txring->ring_txdesc[idx].ctl =
 		    AQ_TXDESC_CTL_TYPE_TXD |
-		    __SHIFTIN(64, AQ_TXDESC_CTL_BLEN) |
+		    __SHIFTIN(14, AQ_TXDESC_CTL_BLEN) |
 		    AQ_TXDESC_CTL_EOP |
 		    AQ_TXDESC_CTL_CMD_WB;
 		txring->ring_txdesc[idx].ctl2 =
-		    __SHIFTIN(64, AQ_TXDESC_CTL2_LEN);
+		    __SHIFTIN(14, AQ_TXDESC_CTL2_LEN);
 
 		txring->ring_mbufs[idx].m = NULL;
 
