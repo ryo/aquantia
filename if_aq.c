@@ -3022,7 +3022,11 @@ aq_start(struct ifnet *ifp)
 			ifp->if_oerrors++;
 			break;
 		}
-#if 0
+
+#define TXSTART_IMMEDIATELY
+
+#ifdef TXSTART_IMMEDIATELY
+		/* start TX DMA */
 		aq_txring_start(sc, txring);
 #endif
 
@@ -3031,7 +3035,7 @@ aq_start(struct ifnet *ifp)
 	}
 
 	if (npkt) {
-#if 1
+#ifndef TXSTART_IMMEDIATELY
 		/* start TX DMA */
 		aq_txring_start(sc, txring);
 #endif
