@@ -2492,19 +2492,29 @@ aq_rxring_alloc(struct aq_softc *sc, struct aq_rxring *rxring)
 
 	memset(rxring->ring_rxdesc, 0, sizeof(aq_rx_desc_t) * AQ_RXD_NUM);
 
-	/* fill rxring with dmamaps and  mbufs */
+	/* fill rxring with dmamaps */
 	for (i = 0; i < AQ_RXD_NUM; i++) {
+		rxring->ring_mbufs[i].m = NULL;
 		bus_dmamap_create(sc->sc_dmat, MCLBYTES, 1,
 		    MCLBYTES, 0, 0,
 		    &rxring->ring_mbufs[i].dmamap);
-
-		error = aq_rxring_add(sc, rxring, i);
-		if (error != 0) {
-			aq_rxring_free(sc, rxring);
-			return error;
-		}
 	}
 	return 0;
+}
+
+static void
+aq_rxdrain(struct aq_softc *sc, struct aq_rxring *rxring)
+{
+	int i;
+
+	/* free all mbufs allocated for RX */
+	for (i = 0; i < AQ_RXD_NUM; i++) {
+		if (rxring->ring_mbufs[i].m != NULL) {
+			bus_dmamap_unload(sc->sc_dmat, rxring->ring_mbufs[i].dmamap);
+			m_freem(rxring->ring_mbufs[i].m);
+			rxring->ring_mbufs[i].m = NULL;
+		}
+	}
 }
 
 /* free a rx ring */
@@ -2513,21 +2523,20 @@ aq_rxring_free(struct aq_softc *sc, struct aq_rxring *rxring)
 {
 	int i;
 
-	_free_dma(sc, &rxring->ring_rxdesc_size, (void **)&rxring->ring_rxdesc,
-	    &rxring->ring_rxdesc_dmamap, rxring->ring_rxdesc_seg);
-
+	/* free all mbufs and dmamaps */
+	aq_rxdrain(sc, rxring);
 	for (i = 0; i < AQ_RXD_NUM; i++) {
 		if (rxring->ring_mbufs[i].dmamap != NULL) {
-			if (rxring->ring_mbufs[i].m != NULL) {
-				bus_dmamap_unload(sc->sc_dmat, rxring->ring_mbufs[i].dmamap);
-				m_freem(rxring->ring_mbufs[i].m);
-				rxring->ring_mbufs[i].m = NULL;
-			}
 			bus_dmamap_destroy(sc->sc_dmat, rxring->ring_mbufs[i].dmamap);
 			rxring->ring_mbufs[i].dmamap = NULL;
 		}
 	}
+
+	/* free RX descriptor */
+	_free_dma(sc, &rxring->ring_rxdesc_size, (void **)&rxring->ring_rxdesc,
+	    &rxring->ring_rxdesc_dmamap, rxring->ring_rxdesc_seg);
 }
+
 
 static int
 aq_txrx_rings_alloc(struct aq_softc *sc)
@@ -2967,20 +2976,30 @@ aq_txring_start(struct aq_softc *sc, struct aq_txring *txring)
 	    txring->ring_prodidx);
 }
 
-static void
+static int
 aq_rxring_init(struct aq_softc *sc, struct aq_rxring *rxring, bool enable_dma)
 {
 	const int ringidx = rxring->ring_index;
+	int i;
+	int error = 0;
 
 	rxring->ring_readidx = 0;
-
-	/* rxring is already full of mbufs */
-
 
 	/* disable DMA once */
 	AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_ENABLE, 0);
 
+	/* free all RX mbufs */
+	aq_rxdrain(sc, rxring);
+
 	if (enable_dma) {
+		for (i = 0; i < AQ_RXD_NUM; i++) {
+			error = aq_rxring_add(sc, rxring, i);
+			if (error != 0) {
+				aq_rxdrain(sc, rxring);
+				return error;
+			}
+		}
+
 		/* RX descriptor physical address */
 		paddr_t paddr = rxring->ring_rxdesc_dmamap->dm_segs[0].ds_addr;
 		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRLSW_ADR(ringidx), paddr);
@@ -3013,6 +3032,7 @@ aq_rxring_init(struct aq_softc *sc, struct aq_rxring *rxring, bool enable_dma)
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_ENABLE, 1);
 	}
 
+	return error;
 }
 
 #define TXRING_NEXTIDX(idx)	\
@@ -3251,7 +3271,7 @@ static int
 aq_init(struct ifnet *ifp)
 {
 	struct aq_softc *sc = ifp->if_softc;
-	int n;
+	int n, error = 0;
 
 	//XXX: need lock
 	printf("%s:%d\n", __func__, __LINE__);
@@ -3267,7 +3287,9 @@ aq_init(struct ifnet *ifp)
 
 	// start RX
 	for (n = 0; n < sc->sc_rxringnum; n++) {
-		aq_rxring_init(sc, &sc->sc_rxring[n], true);
+		error = aq_rxring_init(sc, &sc->sc_rxring[n], true);
+		if (error != 0)
+			goto aq_init_failure;
 	}
 
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_ADR, RPB_RPF_RX_BUF_EN, 1);
@@ -3318,7 +3340,8 @@ aq_init(struct ifnet *ifp)
 	aq_regdump(sc, 1);
 #endif
 
-	return 0;
+ aq_init_failure:
+	return error;
 }
 
 static void
