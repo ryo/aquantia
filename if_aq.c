@@ -1,8 +1,8 @@
 #define XXX_FORCE_32BIT_PA
 #define XXX_DEBUG_PMAP_EXTRACT
-#define XXX_FORCE_PROMISC
+#undef XXX_FORCE_PROMISC
 #undef USE_CALLOUT_TICK
-#define XXX_AQ_REGDUMP
+#define XXX_DUMP_RX_COUNTER
 
 
 
@@ -215,10 +215,9 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define RPFL2UC_DAFLSW_ADR(idx)			(0x5110 + (idx) * 0x8)
 #define RPFL2UC_DAFMSW_ADR(idx)			(0x5114 + (idx) * 0x8)
-#define RPFL2UC_ENF_ADR(idx)			RPFL2UC_DAFMSW_ADR(idx)
-#define RPFL2UC_ACTF_ADR(idx)			(0x5114 + (idx) * 0x8)
-#define  RPFL2UC_ACTF				__BITS(18,16)
-#define  RPFL2UC_EN				__BIT(31)
+#define  RPFL2UC_DAFMSW_MACADDR_HI		__BITS(15,0)
+#define  RPFL2UC_DAFMSW_ACTF			__BITS(18,16)
+#define  RPFL2UC_DAFMSW_EN			__BIT(31)
 #define AQ_HW_MAC			0	/* own address */
 #define AQ_HW_MAC_MIN			1
 #define AQ_HW_MAC_MAX			33
@@ -243,6 +242,18 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_VL_TPID_OUTER_MSK			__BITS(31,16)
 #define  RPF_VL_TPID_INNER_MSK			__BITS(15,0)
 
+#define RPF_ET_ENF_ADR(n)			(0x5300 + (n) * 0x4)
+#define  RPF_ET_ENF_MSK				__BIT(31)
+#define  RPF_ET_UPFEN_MSK			__BIT(30)
+#define  RPF_ET_RXQFEN_MSK			__BIT(29)
+#define  RPF_ET_UPF_MSK				__BITS(28,26)
+#define  RPF_ET_RXQF_MSK			__BITS(24,20)
+#define  RPF_ET_MNG_RXQF_MSK			__BIT(19)
+#define  RPF_ET_ACTF_MSK			__BITS(18,16)
+#define  RPF_ET_VALF_MSK			__BITS(15,0)
+
+
+
 #define HW_ATL_RPF_L3_L4_ENF_ADR(f)		(0x5380 + (f) * 0x4)
 #define  HW_ATL_RPF_L3_L4_ENF_MSK		__BIT(31)
 #define  HW_ATL_RPF_L4_PROTF_EN_MSK		__BIT(25)
@@ -256,6 +267,9 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define RX_FLR_RSS_CONTROL1_ADR			0x54c0
 
+#define RPF_RPB_RX_TC_UPT_ADR			0x54c4
+#define RPF_RPB_RX_TC_UPT_MASK(tc)		(0x00000007 << ((tc) * 4))
+
 #define RPF_RSS_REDIR_ADDR_ADR			0x54e0
 #define  RPF_RSS_REDIR_ADDR_MSK			__BITS(3,0)
 #define  RPF_RSS_REDIR_WR_EN			__BIT(4)
@@ -266,13 +280,22 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 
 #define RPB_RPF_RX_ADR				0x5700
-#define RPB_RPF_RX_TC_MODE			__BIT(8)
-#define RPB_RPF_RX_FC_MODE			__BITS(5,4)
-#define RPB_RPF_RX_BUF_EN			__BIT(0)
+#define  RPB_RPF_RX_TC_MODE			__BIT(8)
+#define  RPB_RPF_RX_FC_MODE			__BITS(5,4)
+#define  RPB_RPF_RX_BUF_EN			__BIT(0)
 
 
-#define RPB_RXBXOFF_EN_ADR			0x5714
+#define RPB_RXBBUF_SIZE_ADR(n)			(0x5710 + (n) * 0x10)
+#define  RPB_RXBBUF_SIZE_MSK			__BITS(8,0)
+
+#define RPB_RXBXOFF_EN_ADR(n)			(0x5714 + (n) * 0x10)
 #define  RPB_RXBXOFF_EN				__BIT(31)
+#define RPB_RXBHI_THRESH_ADR(n)			RPB_RXBXOFF_EN_ADR(n)
+#define  RPB_RXBHI_THRESH_MSK			__BITS(29,16)
+#define  RPB_RXBLO_THRESH_MSK			__BITS(13,0)
+
+
+
 
 #define RX_DMA_DESC_CACHE_INIT_ADR		0x5a00
 #define  RX_DMA_DESC_CACHE_INIT_MSK		__BIT(0)
@@ -292,8 +315,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RX_DMA_DESC_VLAN_STRIP			__BIT(29)
 #define  RX_DMA_DESC_ENABLE			__BIT(31)
 
-#define RX_DMA_DESC_HEAD_ADR(n)			(0x5b0c + (n) * 0x20)
-#define  RX_DMA_DESC_HEAD_MSK			__BITS(12,0)
+#define RX_DMA_DESC_HEAD_PTR_ADR(n)		(0x5b0c + (n) * 0x20)
+#define  RX_DMA_DESC_HEAD_PTR_MSK		__BITS(12,0)
 #define RX_DMA_DESC_TAIL_PTR_ADR(n)		(0x5b10 + (n) * 0x20)
 
 #define RX_DMA_DESC_BUFSIZE_ADR(n)		(0x5b18 + (n) * 0x20)
@@ -318,8 +341,11 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RX_DMA_DCA_EN				__BIT(31)
 #define  RX_DMA_DCA_MODE			__BITS(3,0)
 
-#define RX_DMA_STAT_COUNTER7_ADR		0x6818
-#define STATS_RX_LO_COALESCED_PKT_COUNT0_ADDR	0x6820
+//counters
+#define RX_DMA_GOOD_PKT_COUNTERLSW		0x6800
+#define RX_DMA_GOOD_OCTET_COUNTERLSW		0x6808
+#define RX_DMA_DROP_PKT_CNT_ADR			0x6818
+#define RX_DMA_COALESCED_PKT_CNT_ADR		0x6820
 
 #define HW_ATL_TX_REG_RES_DSBL_ADR		0x7000
 
@@ -374,7 +400,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TX_DMA_DESC_LEN_MSK			__BITS(12, 3)	/* TXD_NUM/8 */
 #define  TX_DMA_DESC_ENABLE			__BIT(31)
 #define TX_DMA_DESC_HEAD_PTR_ADR(n)		(0x7c0c + (n) * 0x40)	/* index of desc */
-#define  TX_DMA_DESC_DHD_MASK			__BITS(12,0)
+#define  TX_DMA_DESC_HEAD_PTR_MSK		__BITS(12,0)
 #define TX_DMA_DESC_TAIL_PTR_ADR(n)		(0x7c10 + (n) * 0x40)	/* index of desc */
 
 #define TX_DMA_DESC_WRWB_THRESH_ADR(n)		(0x7c18 + (n) * 0x40)
@@ -631,8 +657,20 @@ struct aq_rx_desc_read {
 
 struct aq_rx_desc_wb {
 	uint32_t type;
+#define RXDESC_TYPE_RSS		__BITS(3,0)
+#define RXDESC_TYPE_PKTTYPE	__BITS(4,11)
+#define RXDESC_TYPE_RDM_ERR	__BIT(12)
+#define RXDESC_TYPE_RESERVED	__BITS(13,18)
+#define RXDESC_TYPE_CNTL	__BITS(19,20)
+#define RXDESC_TYPE_SPH		__BIT(21)
+#define RXDESC_TYPE_HDR_LEN	__BITS(22,31)
 	uint32_t rss_hash;
 	uint16_t status;
+#define RXDESC_STATUS_DD	__BIT(0)
+#define RXDESC_STATUS_EOP	__BIT(1)
+#define RXDESC_STATUS_STAT	__BITS(2,5)
+#define RXDESC_STATUS_ESTAT	__BITS(6,11)
+#define RXDESC_STATUS_RSC_CNT	__BITS(12,15)
 	uint16_t pkt_len;
 	uint16_t next_desc_ptr;
 	uint16_t vlan;
@@ -677,8 +715,8 @@ typedef struct aq_tx_desc {
 //#define AQ_RXRING_NUM	16	/* <= AQ_RINGS_MAX */
 #define AQ_TXRING_NUM	1	/* <= AQ_RINGS_MAX */
 #define AQ_RXRING_NUM	1	/* <= AQ_RINGS_MAX */
-#define AQ_TXD_NUM	512	/* per ring. must be 8*n */
-#define AQ_RXD_NUM	512	/* per ring. must be 8*n */
+#define AQ_TXD_NUM	32	/* per ring. must be 8*n */
+#define AQ_RXD_NUM	32	/* per ring. must be 8*n */
 
 #define LINKUP_IRQ	0
 
@@ -713,7 +751,7 @@ struct aq_rxring {
 		struct mbuf *m;
 		bus_dmamap_t dmamap;
 	} ring_mbufs[AQ_RXD_NUM];
-	int ring_readidx;
+	unsigned int ring_readidx;
 };
 
 struct aq_softc;
@@ -928,32 +966,6 @@ static const struct aq_product {
 	}
 };
 
-#ifdef XXX_AQ_REGDUMP
-static void
-aq_regdump(struct aq_softc *sc, int i)
-{
-	printf("============%s:%d\n", __func__, __LINE__);
-	printf("AQ_INTR_IRQ_MAP_ADR(%d-%d)=%08x\n", i, i + 1, AQ_READ_REG(sc, AQ_INTR_IRQ_MAP_ADR(i)));
-
-	printf("RPB_RPF_RX_ADR=%08x\n", AQ_READ_REG(sc, RPB_RPF_RX_ADR));
-
-	printf("RX_DMA_DESC_LEN_ADR(%d)=%08x\n", i, AQ_READ_REG(sc, RX_DMA_DESC_LEN_ADR(i)));
-	printf("RX_DMA_INT_DESC_WRWB_EN_ADR=%08x\n", AQ_READ_REG(sc, RX_DMA_INT_DESC_WRWB_EN_ADR));
-
-	printf("RX_INTR_MODERATION_CTL_ADR(%d)=%08x\n", i, AQ_READ_REG(sc, RX_INTR_MODERATION_CTL_ADR(i)));
-
-	printf("RX_DMA_DESC_BASE_ADDRLSW_ADR(%d)=%08x\n", i, AQ_READ_REG(sc, RX_DMA_DESC_BASE_ADDRLSW_ADR(i)));
-	printf("RX_DMA_DESC_BASE_ADDRMSW_ADR(%d)=%08x\n", i, AQ_READ_REG(sc, RX_DMA_DESC_BASE_ADDRMSW_ADR(i)));
-	printf("RX_DMA_DESC_LEN_ADR(%d)=%08x\n", i, AQ_READ_REG(sc, RX_DMA_DESC_LEN_ADR(i)));
-	printf("RX_DMA_DESC_HEAD_ADR(%d)=%08x\n", i, AQ_READ_REG(sc, RX_DMA_DESC_HEAD_ADR(i)));
-	printf("RX_DMA_DESC_TAIL_PTR_ADR(%d)=%08x\n", i, AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(i)));
-	printf("RX_DMA_DESC_BUFSIZE_ADR(%d)=%08x\n", i, AQ_READ_REG(sc, RX_DMA_DESC_BUFSIZE_ADR(i)));
-	printf("RDM_DCAD_ADR(%d)=%08x\n", i, AQ_READ_REG(sc, RDM_DCAD_ADR(i)));
-
-}
-#endif
-
-
 static int
 aq_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
     uint32_t cnt)
@@ -1125,10 +1137,10 @@ aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
 	    (enaddr[5]);
 
 	/* disable, set, and enable */
-	AQ_WRITE_REG_BIT(sc, RPFL2UC_ENF_ADR(index), RPFL2UC_EN, 0);
+	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_EN, 0);
 	AQ_WRITE_REG(sc, RPFL2UC_DAFLSW_ADR(index), l);
-	AQ_WRITE_REG(sc, RPFL2UC_DAFMSW_ADR(index), h);
-	AQ_WRITE_REG_BIT(sc, RPFL2UC_ENF_ADR(index), RPFL2UC_EN, 1);
+	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_MACADDR_HI, h);
+	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_EN, 1);
 
 	return 0;
 }
@@ -1895,8 +1907,8 @@ fw2x_get_stats(struct aq_softc *sc, aq_hw_stats_s_t *stats)
 		    "fw2x> download statistics data FAILED, error %d", error);
 		return error;
 	}
-	stats->dpc = AQ_READ_REG(sc, RX_DMA_STAT_COUNTER7_ADR);
-	stats->cprc = AQ_READ_REG(sc, STATS_RX_LO_COALESCED_PKT_COUNT0_ADDR);
+	stats->dpc = AQ_READ_REG(sc, RX_DMA_DROP_PKT_CNT_ADR);
+	stats->cprc = AQ_READ_REG(sc, RX_DMA_COALESCED_PKT_CNT_ADR);
 
 	return 0;
 }
@@ -1947,13 +1959,13 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_ADR, RPB_RPF_RX_FC_MODE, 1);
 
 	/* RSS Ring selection */
-	const int rss_selection = 0;
+	const int rss_selection = 1;
 	AQ_WRITE_REG(sc, RX_FLR_RSS_CONTROL1_ADR, rss_selection ? 0xb3333333 : 0);
 
 	/* Multicast filters */
-	for (i = AQ_HW_MAC_MIN; i <= AQ_HW_MAC_MAX; i++) {
-		AQ_WRITE_REG_BIT(sc, RPFL2UC_ENF_ADR(i), RPFL2UC_EN, 0);
-		AQ_WRITE_REG_BIT(sc, RPFL2UC_ACTF_ADR(i), RPFL2UC_ACTF, 1);
+	for (i = AQ_HW_MAC_MIN; i < AQ_HW_MAC_MAX; i++) {
+		AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(i), RPFL2UC_DAFMSW_EN, 0);
+		AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(i), RPFL2UC_DAFMSW_ACTF, 1);
 	}
 
 	AQ_WRITE_REG(sc, RX_FLR_MCST_FLR_MSK_ADR, 0);
@@ -1972,7 +1984,7 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 
 	/* misc */
 	if (sc->sc_features & FEATURES_RPF2)
-		AQ_WRITE_REG(sc, HW_ATL_RX_TCP_RSS_HASH, 0x000f0000);	/* XXX: linux set 0x000f0000 */
+		AQ_WRITE_REG(sc, HW_ATL_RX_TCP_RSS_HASH, 0x000f0000);	/* XXX: linux:0x000f0000, freebsd:0x00f0001e */
 	else
 		AQ_WRITE_REG(sc, HW_ATL_RX_TCP_RSS_HASH, 0);
 
@@ -2045,24 +2057,20 @@ aq_hw_qos_set(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, TPB_TXBHI_THRESH_ADR(tc), TPB_TXBHI_THRESH_MSK, (buff_size * (1024 / 32) * 66) / 100);
 	AQ_WRITE_REG_BIT(sc, TPB_TXBLO_THRESH_ADR(tc), TPB_TXBLO_THRESH_MSK, (buff_size * (1024 / 32) * 50) / 100);
 
-//	/* QoS Rx buf size per TC */
-//	tc = 0;
-//	buff_size = AQ_HW_RXBUF_MAX;
-//
-//	rpb_rx_pkt_buff_size_per_tc_set(hw, buff_size, tc);
-//	rpb_rx_buff_hi_threshold_per_tc_set(hw,
-//						(buff_size *
-//						(1024U / 32U) * 66U) /
-//						100U, tc);
-//	rpb_rx_buff_lo_threshold_per_tc_set(hw,
-//						(buff_size *
-//						(1024U / 32U) * 50U) /
-//						100U, tc);
+	/* QoS Rx buf size per TC */
+	tc = 0;
+	buff_size = AQ_HW_RXBUF_MAX;
 
-//	/* QoS 802.1p priority -> TC mapping */
-//	unsigned int i_priority;
-//	for (i_priority = 0; i_priority < 8; i_priority++)
-//		rpf_rpb_user_priority_tc_map_set(hw, i_priority, 0);
+	AQ_WRITE_REG_BIT(sc, RPB_RXBBUF_SIZE_ADR(tc), RPB_RXBBUF_SIZE_MSK, buff_size);
+
+	AQ_WRITE_REG_BIT(sc, RPB_RXBHI_THRESH_ADR(tc), RPB_RXBHI_THRESH_MSK, (buff_size * (1024 / 32) * 66) / 100);
+	AQ_WRITE_REG_BIT(sc, RPB_RXBHI_THRESH_ADR(tc), RPB_RXBLO_THRESH_MSK, (buff_size * (1024 / 32) * 50) / 100);
+
+	/* QoS 802.1p priority -> TC mapping */
+	int i_priority;
+	for (i_priority = 0; i_priority < 8; i_priority++) {
+		AQ_WRITE_REG_BIT(sc, RPF_RPB_RX_TC_UPT_ADR, RPF_RPB_RX_TC_UPT_MASK(0), i_priority);
+	}
 }
 
 static int
@@ -2217,7 +2225,7 @@ aq_if_update_admin_status(struct aq_softc *sc)
 		changed = 1;
 
 		/* turn on/off RX Pause in RPB */
-		AQ_WRITE_REG_BIT(sc, RPB_RXBXOFF_EN_ADR, RPB_RXBXOFF_EN, fc_neg.fc_rx ? 1 : 0);
+		AQ_WRITE_REG_BIT(sc, RPB_RXBXOFF_EN_ADR(0), RPB_RXBXOFF_EN, fc_neg.fc_rx ? 1 : 0);
 
 		aq_mediastatus_update(sc, link_speed, &fc_neg);
 
@@ -2231,7 +2239,7 @@ aq_if_update_admin_status(struct aq_softc *sc)
 		changed = 1;
 
 		/* turn off RX Pause in RPB */
-		AQ_WRITE_REG_BIT(sc, RPB_RXBXOFF_EN_ADR, RPB_RXBXOFF_EN, 0);
+		AQ_WRITE_REG_BIT(sc, RPB_RXBXOFF_EN_ADR(0), RPB_RXBXOFF_EN, 0);
 
 		aq_mediastatus_update(sc, link_speed, &fc_neg);
 	}
@@ -2450,6 +2458,7 @@ aq_rxring_add(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
 	bus_dmamap_sync(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap, 0,
 	    rxring->ring_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_PREREAD);
 
+	/* refill rxdesc, and sync */
 	rxring->ring_rxdesc[idx].read.buf_addr = htole64(rxring->ring_mbufs[idx].dmamap->dm_segs[0].ds_addr);
 	rxring->ring_rxdesc[idx].read.hdr_addr = 0;
 	bus_dmamap_sync(sc->sc_dmat, rxring->ring_rxdesc_dmamap,
@@ -2658,8 +2667,6 @@ aq_intr(void *arg)
 		}
 	}
 
-//	printf("\n");
-
 	return handled;
 }
 
@@ -2799,12 +2806,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 	error = aq_hw_reset(sc);
 	if (error != 0)
 		goto attach_failure;
-
-#ifdef XXX_AQ_REGDUMP
-	printf("====after aq_hw_reset\n");
-	aq_regdump(sc, 0);
-	aq_regdump(sc, 1);
-#endif
 
 	aq_get_mac_addr(sc);
 
@@ -3127,7 +3128,7 @@ aq_tx_intr(struct aq_txring *txring, bool watchdog)
 
 	//XXX: need lock
 
-	hw_head = AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_DHD_MASK);
+	hw_head = AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_HEAD_PTR_MSK);
 	if (hw_head == txring->ring_considx)
 		return 0;
 
@@ -3135,7 +3136,7 @@ aq_tx_intr(struct aq_txring *txring, bool watchdog)
 	printf("%s:%d: ringidx=%d, TXDESC_(EN+)LEN=%08x\n", __func__, __LINE__,
 	    txring->ring_index, AQ_READ_REG(sc, TX_DMA_DESC_LEN_ADR(txring->ring_index)));
 	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u prod/cons=%d/%d\n", __func__, __LINE__, txring->ring_index,
-	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_DHD_MASK),
+	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_HEAD_PTR_MSK),
 	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(txring->ring_index)),
 	    txring->ring_prodidx,
 	    txring->ring_considx);
@@ -3146,7 +3147,7 @@ aq_tx_intr(struct aq_txring *txring, bool watchdog)
 #if 0
 		printf("# %s:%d: txring=%d, TX CLEANUP: HEAD/TAIL=%lu/%u, considx/prodidx=%d/%d, idx=%d\n", __func__, __LINE__,
 		    txring->ring_index,
-		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_DHD_MASK),
+		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_HEAD_PTR_MSK),
 		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(txring->ring_index)),
 		    txring->ring_considx,
 		    txring->ring_prodidx,
@@ -3204,74 +3205,101 @@ aq_tx_intr(struct aq_txring *txring, bool watchdog)
 #endif
 	}
 
-	return 0;
+	return 1;
 }
 
 static int
 aq_rx_intr(struct aq_rxring *rxring)
 {
 	struct aq_softc *sc = rxring->ring_sc;
-//	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	int idx;
+	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	const int ringidx = rxring->ring_index;
+	aq_rx_desc_t *rxd;
+	struct mbuf *m;
+	uint32_t rxd_type, rxd_hash;
+	uint16_t rxd_status, rxd_pktlen, rxd_nextdescptr, rxd_vlan;
+	unsigned int idx;
+
+	if (rxring->ring_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK))
+		return 0;
 
 	//XXX: need lock
 	printf("# %s:%d\n", __func__, __LINE__);
 
-#if 1 //DUMP COUNTER
-#define HW_ATL_STATS_RX_DMA_GOOD_PKT_COUNTERLSW		0x00006800
-#define HW_ATL_STATS_RX_DMA_GOOD_OCTET_COUNTERLSW	0x00006808
-#define HW_ATL_RPB_RX_DMA_DROP_PKT_CNT_ADR		0x00006818
+#ifdef XXX_DUMP_RX_COUNTER
 	printf("RXPKT:%lu, RXBYTE:%lu, DMADROP:%u\n",
-	    AQ_READ64_REG(sc, HW_ATL_STATS_RX_DMA_GOOD_PKT_COUNTERLSW),
-	    AQ_READ64_REG(sc, HW_ATL_STATS_RX_DMA_GOOD_OCTET_COUNTERLSW),
-	    AQ_READ_REG(sc, HW_ATL_RPB_RX_DMA_DROP_PKT_CNT_ADR));
+	    AQ_READ64_REG(sc, RX_DMA_GOOD_PKT_COUNTERLSW),
+	    AQ_READ64_REG(sc, RX_DMA_GOOD_OCTET_COUNTERLSW),
+	    AQ_READ_REG(sc, RX_DMA_DROP_PKT_CNT_ADR));
 #endif
 
+#if 1
+	printf("%s:%d: begin: RX_DMA_DESC_HEAD/TAIL=%lu/%u, readidx=%u\n", __func__, __LINE__,
+	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK),
+	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(ringidx)), rxring->ring_readidx);
+#endif
 
-	int ringidx = rxring->ring_index;
-	printf("%s:%d: RX_DMA_DESC_HEAD/TAIL=%lu/%u\n", __func__, __LINE__,
-	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_ADR(ringidx), RX_DMA_DESC_HEAD_MSK),
-	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(ringidx)));
+	for (idx = rxring->ring_readidx;
+	    idx != AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK);
+	    idx = RXRING_NEXTIDX(idx)) {
 
-#if 1 //XXX: Dump all rxdesc
-	for (idx = 0; idx < 4; idx++) {
 		bus_dmamap_sync(sc->sc_dmat, rxring->ring_rxdesc_dmamap,
 		    sizeof(aq_rx_desc_t) * idx, sizeof(aq_rx_desc_t),
 		    BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE);
 
-		printf("%s:%d: rxdesc[%3d] buf_addr=%016lx, hdr_addr=%016lx\n", __func__, __LINE__,
-		    idx,
-		    rxring->ring_rxdesc[idx].read.buf_addr,
-		    rxring->ring_rxdesc[idx].read.hdr_addr);
+		rxd = &rxring->ring_rxdesc[idx];
+		rxd_type = le32toh(rxd->wb.type);
+		rxd_hash = le32toh(rxd->wb.rss_hash);
+		rxd_status = le16toh(rxd->wb.status);
+		rxd_pktlen = le16toh(rxd->wb.pkt_len);
+		rxd_nextdescptr = le16toh(rxd->wb.next_desc_ptr);
+		rxd_vlan = le16toh(rxd->wb.vlan);
+
+		printf("desc[%d] type=%08x, hash=%08x, status=%08x, pktlen=%u, nextdesc=%u, vlan=%x\n",
+		    idx, rxd_type, rxd_hash, rxd_status, rxd_pktlen, rxd_nextdescptr, rxd_vlan);
+		printf(" type: rss=%ld, pkttype=%ld, rdm=%ld, cntl=%ld, sph=%ld, hdrlen=%ld\n",
+		    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSS),
+		    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE),
+		    __SHIFTOUT(rxd_type, RXDESC_TYPE_RDM_ERR),
+		    __SHIFTOUT(rxd_type, RXDESC_TYPE_CNTL),
+		    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
+		    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
+
+
+		bus_dmamap_sync(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap, 0,
+		    rxring->ring_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_POSTREAD);
+
+		m = rxring->ring_mbufs[idx].m;
+		rxring->ring_mbufs[idx].m = NULL;
+
+		hexdump(printf, "mbuf", m->m_data, rxd_pktlen);
+
+		/* enqueue an mbuf */
+		m->m_len = rxd_pktlen;
+		m_set_rcvif(m, ifp);
+		m->m_pkthdr.len = rxd_pktlen;
+		if_percpuq_enqueue(ifp->if_percpuq, m);
+
+		/* refill, and update tail */
+		aq_rxring_add(sc, rxring, idx);
+		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(ringidx), idx);
 	}
+	rxring->ring_readidx = idx;
+
+#if 1
+	printf("%s:%d: end: RX_DMA_DESC_HEAD/TAIL=%lu/%u, readidx=%u\n", __func__, __LINE__,
+	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK),
+	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(ringidx)), rxring->ring_readidx);
 #endif
 
-
-#if 0 //notyet
-	for (idx = rxring->ring_readidx; ; idx = RXRING_NEXTIDX(idx)) {
-		//DEBUG. show done rxdesc
-		bus_dmamap_sync(sc->sc_dmat, rxring->ring_rxdesc_dmamap,
-		    sizeof(aq_rx_desc_t) * idx, sizeof(aq_rx_desc_t),
-		    BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE);
-
-		printf("%s:%d: rxdesc[%3d] buf_addr=%016lx, hdr_addr=%016lx\n", __func__, __LINE__,
-		    idx,
-		    rxring->ring_rxdesc[idx].read.buf_addr,
-		    rxring->ring_rxdesc[idx].read.hdr_addr);
-
-		break;
-	}
-#endif
-
-
-	return 0;
+	return 1;
 }
 
 static int
 aq_init(struct ifnet *ifp)
 {
 	struct aq_softc *sc = ifp->if_softc;
-	int n, error = 0;
+	int i, error = 0;
 
 	//XXX: need lock
 	printf("%s:%d\n", __func__, __LINE__);
@@ -3280,34 +3308,21 @@ aq_init(struct ifnet *ifp)
 
 
 	// start TX
-	for (n = 0; n < sc->sc_txringnum; n++) {
-		aq_txring_init(sc, &sc->sc_txring[n], true);
+	for (i = 0; i < sc->sc_txringnum; i++) {
+		aq_txring_init(sc, &sc->sc_txring[i], true);
 	}
 	AQ_WRITE_REG_BIT(sc, TPB_TX_BUF_ADR, TPB_TX_BUF_EN, 1);
 
 	// start RX
-	for (n = 0; n < sc->sc_rxringnum; n++) {
-		error = aq_rxring_init(sc, &sc->sc_rxring[n], true);
+	for (i = 0; i < sc->sc_rxringnum; i++) {
+		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(i), RX_DMA_DESC_HEAD_PTR_MSK, 0);
+		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(i), AQ_RXD_NUM - 1);
+
+		error = aq_rxring_init(sc, &sc->sc_rxring[i], true);
 		if (error != 0)
 			goto aq_init_failure;
 	}
-
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_ADR, RPB_RPF_RX_BUF_EN, 1);
-
-//	AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(0), AQ_RXD_NUM - 1);
-#if 1 //XXX?
-	AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_HEAD_ADR(0), RX_DMA_DESC_HEAD_MSK, 0);
-	AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(0), AQ_RXD_NUM - 1);
-#endif
-
-
-#if 1
-	const int ringidx = 0;
-	printf("%s:%d: RX_DMA_DESC_HEAD/TAIL=%lu/%u\n", __func__, __LINE__,
-	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_ADR(ringidx), RX_DMA_DESC_HEAD_MSK),
-	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(ringidx)));
-#endif
-
 
 #ifdef XXX_FORCE_PROMISC
 	AQ_WRITE_REG_BIT(sc, RPFL2BC_EN_ADR, RPFL2BC_PROMISC_MODE, 1);
@@ -3335,11 +3350,6 @@ aq_init(struct ifnet *ifp)
 	ifp->if_flags |= IFF_RUNNING;
 	ifp->if_flags &= ~IFF_OACTIVE;
 
-#ifdef XXX_AQ_REGDUMP
-	aq_regdump(sc, 0);
-	aq_regdump(sc, 1);
-#endif
-
  aq_init_failure:
 	return error;
 }
@@ -3362,7 +3372,7 @@ aq_start(struct ifnet *ifp)
 #if 0
 	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u, INTR_MASK/INTR_STATUS=%08x/%08x\n",
 	    __func__, __LINE__, txring->ring_index,
-	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_DHD_MASK),
+	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_HEAD_PTR_MSK),
 	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(txring->ring_index)),
 	    AQ_READ_REG(sc, AQ_INTR_MASK), AQ_READ_REG(sc, AQ_INTR_STATUS));
 #endif
@@ -3461,7 +3471,7 @@ aq_watchdog(struct ifnet *ifp)
 		printf("%s:%d: ringidx=%d, TXDESC_(EN+)LEN=%08x\n", __func__, __LINE__,
 		    txring->ring_index, AQ_READ_REG(sc, TX_DMA_DESC_LEN_ADR(txring->ring_index)));
 		printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u\n", __func__, __LINE__, txring->ring_index,
-		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_DHD_MASK),
+		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_HEAD_PTR_MSK),
 		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(txring->ring_index)));
 #endif
 
