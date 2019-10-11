@@ -203,7 +203,11 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define MPI_TX_REG_RES_DIS_ADR			0x4000
 #define HW_ATL_MAC_PHY_CONTROL			0x4000
 #define  HW_ATL_MAC_PHY_MPI_RESET_BIT			0x1d
-#define HW_ATL_RX_REG_RES_DSBL_ADR		0x5000
+
+#define RX_REG_SYSTEM_ADR			0x5000
+#define  RPB_DMA_SYS_LOOPBACK			__BIT(6)
+#define  RPF_TPO_RPF_SYS_LOOPBACK		__BIT(8)
+#define  RX_REG_RESET_DISABLE			__BIT(29)
 
 #define HW_ATL_RX_TCP_RSS_HASH			0x5040
 
@@ -332,8 +336,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define RDM_DCAD_ADR(n)				(0x6100 + (n) * 0x4)
 #define  RDM_DCAD_CPUID_MSK			__BITS(7,0)
-#define  RDM_DCAD_PAY_EN			__BIT(29)
-#define  RDM_DCAD_HDR_EN			__BIT(30)
+#define  RDM_DCAD_PAYLOAD_EN			__BIT(29)
+#define  RDM_DCAD_HEADER_EN			__BIT(30)
 #define  RDM_DCAD_DESC_EN			__BIT(31)
 
 #define RX_DMA_DCA_ADR				0x6180
@@ -346,7 +350,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define RX_DMA_DROP_PKT_CNT_ADR			0x6818
 #define RX_DMA_COALESCED_PKT_CNT_ADR		0x6820
 
-#define HW_ATL_TX_REG_RES_DSBL_ADR		0x7000
+#define TX_REG_SYSTEM_ADR			0x7000
+#define  TPB_DMA_SYS_LOOPBACK			__BIT(6)
+#define  TPB_TPO_PKT_SYS_LOOPBACK		__BIT(7)
+#define  TX_REG_RESET_DISABLE			__BIT(29)
 
 #define TPS_DESC_VM_ARB_MODE_ADR		0x7300
 #define  TPS_DESC_VM_ARB_MODE_MSK		__BIT(0)
@@ -1276,8 +1283,8 @@ global_software_reset(struct aq_softc *sc)
 {
 	uint32_t v;
 
-	AQ_WRITE_REG_BIT(sc, HW_ATL_RX_REG_RES_DSBL_ADR, __BIT(29), 0);	/* RX disable */
-	AQ_WRITE_REG_BIT(sc, HW_ATL_TX_REG_RES_DSBL_ADR, __BIT(29), 0);	/* TX disable */
+	AQ_WRITE_REG_BIT(sc, RX_REG_SYSTEM_ADR, RX_REG_RESET_DISABLE, 0);	/* RX disable */
+	AQ_WRITE_REG_BIT(sc, TX_REG_SYSTEM_ADR, TX_REG_RESET_DISABLE, 0);	/* TX disable */
 
 	AQ_WRITE_REG_BIT(sc, MPI_TX_REG_RES_DIS_ADR, __BIT(29), 0);
 
@@ -3031,8 +3038,8 @@ aq_rxring_init(struct aq_softc *sc, struct aq_rxring *rxring, bool enable_dma)
 		const int cpuid = 0;	//XXX
 		AQ_WRITE_REG_BIT(sc, RDM_DCAD_ADR(ringidx), RDM_DCAD_CPUID_MSK, cpuid);
 		AQ_WRITE_REG_BIT(sc, RDM_DCAD_ADR(ringidx), RDM_DCAD_DESC_EN, 0);
-		AQ_WRITE_REG_BIT(sc, RDM_DCAD_ADR(ringidx), RDM_DCAD_HDR_EN, 0);
-		AQ_WRITE_REG_BIT(sc, RDM_DCAD_ADR(ringidx), RDM_DCAD_PAY_EN, 0);
+		AQ_WRITE_REG_BIT(sc, RDM_DCAD_ADR(ringidx), RDM_DCAD_HEADER_EN, 0);
+		AQ_WRITE_REG_BIT(sc, RDM_DCAD_ADR(ringidx), RDM_DCAD_PAYLOAD_EN, 0);
 
 		/* rxring_start: start receiving */
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_ENABLE, 1);
