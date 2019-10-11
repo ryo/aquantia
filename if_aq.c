@@ -6,6 +6,14 @@
 #define XXX_DUMP_RX_MBUF
 #define XXX_DUMP_MACTABLE
 
+//
+// terminology
+//
+//	MPI = MAC PHY INTERFACE?
+//	RPO = RX Protocol Offloading?
+//	TPO = TX Protocol Offloading?
+//
+
 
 /*	$NetBSD$	*/
 
@@ -197,7 +205,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  AQ_INTR_CTRL_MULTIVEC			__BIT(2)	//?
 #define  AQ_INTR_CTRL_AUTO_MASK			__BIT(5)
 #define  AQ_INTR_CTRL_CLR_ON_READ		__BIT(7)
-#define  AQ_INTR_CTRL_RESET_DISABLE		__BIT(29)
+#define  AQ_INTR_CTRL_RESET_DIS			__BIT(29)
 #define  AQ_INTR_CTRL_RESET_IRQ			__BIT(31)
 
 //#define ITR_REG_RES_DSBL_ADR			AQ_INTR_CTRL
@@ -205,14 +213,13 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define MIF_POWER_GATING_ENABLE_CONTROL_ADR	0x32a8
 
-#define MPI_TX_REG_RES_DIS_ADR			0x4000
-#define HW_ATL_MAC_PHY_CONTROL			0x4000
-#define  HW_ATL_MAC_PHY_MPI_RESET_BIT			0x1d
+#define MPI_RESETCTRL_ADR			0x4000
+#define  MPI_RESETCTRL_RESET_DIS		__BIT(29)
 
-#define RX_REG_SYSTEM_ADR			0x5000
+#define RX_SYSCONTROL_ADR			0x5000
 #define  RPB_DMA_SYS_LOOPBACK			__BIT(6)
 #define  RPF_TPO_RPF_SYS_LOOPBACK		__BIT(8)
-#define  RX_REG_RESET_DISABLE			__BIT(29)
+#define  RX_REG_RESET_DIS			__BIT(29)
 
 #define HW_ATL_RX_TCP_RSS_HASH			0x5040
 
@@ -287,7 +294,6 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define RPF_RSS_REDIR_WR_DATA_ADR		0x54e4
 #define  RPF_RSS_REDIR_WR_DATA_MSK		__BITS(15,0)
 
-/* RPO = RX Protocol Offloading? */
 #define RPO_IPV4_ADR				0x5580
 #define  RPO_IPV4_CHK_EN			__BIT(1)
 #define  RPO_IPV4_L4_CHECK_EN			__BIT(0)	/* TCP, UDP */
@@ -378,10 +384,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define RX_DMA_DROP_PKT_CNT_ADR			0x6818
 #define RX_DMA_COALESCED_PKT_CNT_ADR		0x6820
 
-#define TX_REG_SYSTEM_ADR			0x7000
+#define TX_SYSCONTROL_ADR			0x7000
 #define  TPB_DMA_SYS_LOOPBACK			__BIT(6)
 #define  TPB_TPO_PKT_SYS_LOOPBACK		__BIT(7)
-#define  TX_REG_RESET_DISABLE			__BIT(29)
+#define  TX_REG_RESET_DIS			__BIT(29)
 
 #define TPS_DESC_VM_ARB_MODE_ADR		0x7300
 #define  TPS_DESC_VM_ARB_MODE_MSK		__BIT(0)
@@ -405,7 +411,6 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_HW_RXBUF_MAX		320
 
 
-/* TPO = TX Protocol Offloading? */
 #define TPO_IPV4_ADR				0x7800
 #define  TPO_IPV4_CHK_EN			__BIT(1)
 #define  TPO_IPV4_L4_CHECK_EN			__BIT(0)	/* TCP,UDP */
@@ -1346,10 +1351,9 @@ global_software_reset(struct aq_softc *sc)
 {
 	uint32_t v;
 
-	AQ_WRITE_REG_BIT(sc, RX_REG_SYSTEM_ADR, RX_REG_RESET_DISABLE, 0);	/* RX disable */
-	AQ_WRITE_REG_BIT(sc, TX_REG_SYSTEM_ADR, TX_REG_RESET_DISABLE, 0);	/* TX disable */
-
-	AQ_WRITE_REG_BIT(sc, MPI_TX_REG_RES_DIS_ADR, __BIT(29), 0);
+	AQ_WRITE_REG_BIT(sc, RX_SYSCONTROL_ADR, RX_REG_RESET_DIS, 0);
+	AQ_WRITE_REG_BIT(sc, TX_SYSCONTROL_ADR, TX_REG_RESET_DIS, 0);
+	AQ_WRITE_REG_BIT(sc, MPI_RESETCTRL_ADR, MPI_RESETCTRL_RESET_DIS, 0);
 
 	v = AQ_READ_REG(sc, GLB_STANDARD_CTL1_ADR);
 	v &= ~GLB_REG_RES_DIS_MSK;
@@ -1591,7 +1595,7 @@ aq_hw_reset(struct aq_softc *sc)
 	int error;
 
 	/* disable irq */
-	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_RESET_DISABLE, 0);
+	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_RESET_DIS, 0);
 
 	/* apply */
 	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_RESET_IRQ, 1);
@@ -2304,8 +2308,8 @@ aq_hw_init(struct aq_softc *sc)
 	aq_hw_qos_set(sc);
 
 	/* Enable interrupt */
-	AQ_WRITE_REG(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_RESET_DISABLE);
-//	AQ_WRITE_REG(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_RESET_DISABLE | AQ_INTR_CTRL_CLR_ON_READ);
+	AQ_WRITE_REG(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_RESET_DIS);
+//	AQ_WRITE_REG(sc, AQ_INTR_CTRL, AQ_INTR_CTRL_RESET_DIS | AQ_INTR_CTRL_CLR_ON_READ);
 	AQ_WRITE_REG(sc, AQ_INTR_AUTOMASK, 0xffffffff);
 
 	int msix_mode = 0;	//XXX
