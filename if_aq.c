@@ -114,7 +114,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <dev/pci/pcireg.h>
 #include <dev/pci/pcidevs.h>
 
-#define CONFIG_LRO_ENABLED	0
+#define CONFIG_LRO_ENABLE	0
+#define CONFIG_RSS_ENABLE	0
 
 
 
@@ -864,7 +865,8 @@ struct aq_softc {
 	bool sc_fast_start_enabled;	/* XXX: always zero */
 	bool sc_flash_present;
 
-	bool sc_lro_enabled;
+	bool sc_lro_enable;
+	bool sc_rss_enable;
 
 	int sc_media_active;
 	struct aq_hw_fc_info sc_fc;
@@ -2033,8 +2035,7 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_ADR, RPB_RPF_RX_FC_MODE, 1);
 
 	/* RSS Ring selection */
-	const int rss_selection = 1;
-	AQ_WRITE_REG(sc, RX_FLR_RSS_CONTROL1_ADR, rss_selection ? 0xb3333333 : 0);
+	AQ_WRITE_REG(sc, RX_FLR_RSS_CONTROL1_ADR, sc->sc_rss_enable ? 0xb3333333 : 0);
 
 	/* Multicast filters */
 	for (i = AQ_HW_MAC_MIN; i < AQ_HW_MAC_MAX; i++) {
@@ -2185,7 +2186,7 @@ aq_hw_offload_set(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_PTOPT_EN_ADR, RPO_LRO_PTOPT_EN_MSK, 0);
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_PKT_MIN_ADR, RPO_LRO_PKT_MIN_MSK, 10);
 	AQ_WRITE_REG(sc, RPO_LRO_RSC_MAX_ADR, 1);
-	AQ_WRITE_REG(sc, RPO_LRO_EN_ADR, sc->sc_lro_enabled ? 0xffffffff : 0);
+	AQ_WRITE_REG(sc, RPO_LRO_EN_ADR, sc->sc_lro_enable ? 0xffffffff : 0);
 
 }
 
@@ -2907,7 +2908,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 	}
 	aprint_normal_dev(self, "interrupting at %s\n", intrstr);
 
-	sc->sc_lro_enabled = CONFIG_LRO_ENABLED;
+	sc->sc_lro_enable = CONFIG_LRO_ENABLE;
+	sc->sc_rss_enable = CONFIG_RSS_ENABLE;
 
 	sc->sc_txringnum = AQ_TXRING_NUM;
 	sc->sc_rxringnum = AQ_RXRING_NUM;
