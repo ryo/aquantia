@@ -4,6 +4,7 @@
 #undef USE_CALLOUT_TICK
 #define XXX_DUMP_RX_COUNTER
 #define XXX_DUMP_RX_MBUF
+#define XXX_DUMP_MACTABLE
 
 
 /*	$NetBSD$	*/
@@ -105,6 +106,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <dev/pci/pcivar.h>
 #include <dev/pci/pcireg.h>
 #include <dev/pci/pcidevs.h>
+
+#define CONFIG_LRO_ENABLED	0
+
+
 
 #define HW_ATL_RSS_HASHKEY_SIZE			40
 #define HW_ATL_RSS_INDIRECTION_TABLE_MAX	64
@@ -282,6 +287,29 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define RPF_RSS_REDIR_WR_DATA_ADR		0x54e4
 #define  RPF_RSS_REDIR_WR_DATA_MSK		__BITS(15,0)
 
+/* RPO = RX Protocol Offloading? */
+#define RPO_IPV4_ADR				0x5580
+#define  RPO_IPV4_CHK_EN			__BIT(1)
+#define  RPO_IPV4_L4_CHECK_EN			__BIT(0)	/* TCP, UDP */
+
+#define RPO_LRO_EN_ADR				0x5590
+#define RPO_LRO_QSES_LMT_ADR			0x5594
+#define  RPO_LRO_QSES_LMT_MSK			__BITS(13,12)
+#define RPO_LRO_TOT_DSC_LMT_ADR			0x5594
+#define  RPO_LRO_TOT_DSC_LMT_MSK		__BITS(6,5)
+#define RPO_LRO_PTOPT_EN_ADR			0x5594
+#define  RPO_LRO_PTOPT_EN_MSK			__BIT(15)
+#define RPO_LRO_PKT_MIN_ADR			0x5594
+#define  RPO_LRO_PKT_MIN_MSK			__BITS(4,0)
+#define RPO_LRO_RSC_MAX_ADR			0x5598
+#define RPO_LRO_LDES_MAX_ADR(i)			(0x55a0 + (i / 8) * 4)
+#define  RPO_LRO_LDES_MAX_MSK(i)		(0x00000003 << ((i & 7) * 4))
+#define RPO_LRO_TB_DIV_ADR			0x5620
+#define  RPO_LRO_TB_DIV_MSK			__BITS(20,31)
+#define RPO_LRO_INA_IVAL_ADR			0x5620
+#define  RPO_LRO_INA_IVAL_MSK			__BITS(10,19)
+#define RPO_LRO_MAX_IVAL_ADR			0x5620
+#define  RPO_LRO_MAX_IVAL_MSK			__BITS(9,0)
 
 #define RPB_RPF_RX_ADR				0x5700
 #define  RPB_RPF_RX_TC_MODE			__BIT(8)
@@ -376,16 +404,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_HW_TXBUF_MAX		160
 #define AQ_HW_RXBUF_MAX		320
 
-#define TPB_TXBBUF_SIZE_ADR(buffer)		(0x7910 + (buffer) * 0x10)
-#define  TPB_TXBBUF_SIZE_MSK			__BITS(7,0)
-#define TPB_TXB_THRESH_ADR(buffer)		(0x7914 + (buffer) * 0x10)
-#define  TPB_TXB_THRESH_HI			__BITS(16,28)
-#define  TPB_TXB_THRESH_LO			__BITS(12,0)
 
-#define AQ_HW_TX_DMA_TOTAL_REQ_LIMIT_ADR	0x7b20
-#define TX_DMA_INT_DESC_WRWB_EN_ADR		0x7b40
-#define  TX_DMA_INT_DESC_WRWB_EN		__BIT(1)
-#define  TX_DMA_INT_DESC_MODERATE_EN		__BIT(4)
+/* TPO = TX Protocol Offloading? */
+#define TPO_IPV4_ADR				0x7800
+#define  TPO_IPV4_CHK_EN			__BIT(1)
+#define  TPO_IPV4_L4_CHECK_EN			__BIT(0)	/* TCP,UDP */
+
+#define TDM_LSO_EN_ADR				0x7810
+
 
 #define THM_LSO_TCP_FLAG_FIRST_ADR		0x7820
 #define THM_LSO_TCP_FLAG_MID_ADR		THM_LSO_TCP_FLAG_FIRST_ADR
@@ -398,6 +424,17 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TPB_TX_BUF_EN				__BIT(0)
 #define  TPB_TX_BUF_SCP_INS_EN			__BIT(2)
 #define  TPB_TX_BUF_TC_MODE_EN			__BIT(8)
+
+#define TPB_TXBBUF_SIZE_ADR(buffer)		(0x7910 + (buffer) * 0x10)
+#define  TPB_TXBBUF_SIZE_MSK			__BITS(7,0)
+#define TPB_TXB_THRESH_ADR(buffer)		(0x7914 + (buffer) * 0x10)
+#define  TPB_TXB_THRESH_HI			__BITS(16,28)
+#define  TPB_TXB_THRESH_LO			__BITS(12,0)
+
+#define AQ_HW_TX_DMA_TOTAL_REQ_LIMIT_ADR	0x7b20
+#define TX_DMA_INT_DESC_WRWB_EN_ADR		0x7b40
+#define  TX_DMA_INT_DESC_WRWB_EN		__BIT(1)
+#define  TX_DMA_INT_DESC_MODERATE_EN		__BIT(4)
 
 #define TX_DMA_DESC_BASE_ADDRLSW_ADR(n)		(0x7c00 + (n) * 0x40)
 #define TX_DMA_DESC_BASE_ADDRMSW_ADR(n)		(0x7c04 + (n) * 0x40)
@@ -822,6 +859,9 @@ struct aq_softc {
 	bool sc_rbl_enabled;
 	bool sc_fast_start_enabled;	/* XXX: always zero */
 	bool sc_flash_present;
+
+	bool sc_lro_enabled;
+
 	int sc_media_active;
 	struct aq_hw_fc_info sc_fc;
 
@@ -1125,6 +1165,27 @@ aq_get_mac_addr(struct aq_softc *sc)
 	    ether_sprintf(sc->sc_enaddr.ether_addr_octet));
 
 	return 0;
+}
+
+static void
+aq_dump_macaddr(struct aq_softc *sc)
+{
+	int i;
+	uint32_t h, l;
+
+	for (i = 0; i <= AQ_HW_MAC_MAX; i++) {
+		l = AQ_READ_REG(sc, RPFL2UC_DAFLSW_ADR(i));
+		h = AQ_READ_REG(sc, RPFL2UC_DAFMSW_ADR(i));
+		printf("MAC TABLE[%d] %02x:%02x:%02x:%02x:%02x:%02x enable=%d\n",
+		    i,
+		    (h >> 8) & 0xff,
+		    h & 0xff,
+		    (l >> 24) & 0xff,
+		    (l >> 16) & 0xff,
+		    (l >> 8) & 0xff,
+		    l & 0xff,
+		    (h & RPFL2UC_DAFMSW_EN) ? 1 : 0);
+	}
 }
 
 /* set multicast filter, or own address */
@@ -2034,12 +2095,11 @@ aq_hw_interrupt_moderation_set(struct aq_softc *sc)
 #endif
 }
 
-
 static void
 aq_hw_qos_set(struct aq_softc *sc)
 {
 	uint32_t tc = 0;
-	uint32_t buff_size = 0;
+	uint32_t buff_size;
 
 	/* TPS Descriptor rate init */
 	AQ_WRITE_REG_BIT(sc, TPS_DESC_RATE_REG, TPS_DESC_RATE_TA_RST, 0);
@@ -2076,6 +2136,51 @@ aq_hw_qos_set(struct aq_softc *sc)
 	for (i_priority = 0; i_priority < 8; i_priority++) {
 		AQ_WRITE_REG_BIT(sc, RPF_RPB_RX_TC_UPT_ADR, RPF_RPB_RX_TC_UPT_MASK(0), i_priority);
 	}
+}
+
+static void
+aq_hw_offload_set(struct aq_softc *sc)
+{
+	uint32_t i, v;
+
+	/* TX checksums offloads*/
+	AQ_WRITE_REG_BIT(sc, TPO_IPV4_ADR, TPO_IPV4_CHK_EN, 1);
+	AQ_WRITE_REG_BIT(sc, TPO_IPV4_ADR, TPO_IPV4_L4_CHECK_EN, 1);
+
+	/* RX checksums offloads*/
+	AQ_WRITE_REG_BIT(sc, RPO_IPV4_ADR, RPO_IPV4_CHK_EN, 1);
+	AQ_WRITE_REG_BIT(sc, RPO_IPV4_ADR, RPO_IPV4_L4_CHECK_EN, 1);
+
+	/* LSO offloads*/
+	AQ_WRITE_REG(sc, TDM_LSO_EN_ADR, 0xffffffff);
+
+#define HW_ATL_B0_LRO_RXD_MAX	16
+#define HW_ATL_B0_RINGS_MAX	32
+	v = (8 < HW_ATL_B0_LRO_RXD_MAX) ? 3 :
+	    (4 < HW_ATL_B0_LRO_RXD_MAX) ? 2 :
+	    (2 < HW_ATL_B0_LRO_RXD_MAX) ? 1 : 0;
+
+	for (i = 0; i < HW_ATL_B0_RINGS_MAX; i++) {
+		AQ_WRITE_REG_BIT(sc, RPO_LRO_LDES_MAX_ADR(i), RPO_LRO_LDES_MAX_MSK(i), v);
+	}
+
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_TB_DIV_ADR, RPO_LRO_TB_DIV_MSK, 0x61a);
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_INA_IVAL_ADR, RPO_LRO_INA_IVAL_MSK, 0);
+	/*
+	 * the LRO timebase divider is 5 uS (0x61a),
+	 * to get a maximum coalescing interval of 250 uS,
+	 * we need to multiply by 50(0x32) to get
+	 * the default value 250 uS
+	 */
+
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_MAX_IVAL_ADR, RPO_LRO_MAX_IVAL_MSK, 50);
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_QSES_LMT_ADR, RPO_LRO_QSES_LMT_MSK, 1);
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_TOT_DSC_LMT_ADR, RPO_LRO_TOT_DSC_LMT_MSK, 2);
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_PTOPT_EN_ADR, RPO_LRO_PTOPT_EN_MSK, 0);
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_PKT_MIN_ADR, RPO_LRO_PKT_MIN_MSK, 10);
+	AQ_WRITE_REG(sc, RPO_LRO_RSC_MAX_ADR, 1);
+	AQ_WRITE_REG(sc, RPO_LRO_EN_ADR, sc->sc_lro_enabled ? 0xffffffff : 0);
+
 }
 
 static int
@@ -2210,7 +2315,7 @@ aq_hw_init(struct aq_softc *sc)
 	/* link interrupt */
 	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_ADR(3), __BIT(7) | LINKUP_IRQ);
 
-//	aq_hw_offload_set(hw);
+	aq_hw_offload_set(sc);
 
 	return 0;
 }
@@ -2665,7 +2770,6 @@ aq_intr(void *arg)
 
 	status = AQ_READ_REG(sc, AQ_INTR_STATUS);
 //	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()), AQ_READ_REG(sc, AQ_INTR_MASK), status, AQ_READ_REG(sc, AQ_INTR_STATUS));
-	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR, 0xffffffff);	//XXX
 
 	if (status & __BIT(LINKUP_IRQ)) {
 		handled += aq_if_update_admin_status(sc);
@@ -2678,6 +2782,7 @@ aq_intr(void *arg)
 		}
 	}
 
+	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR, 0xffffffff);	//XXX
 	return handled;
 }
 
@@ -2789,6 +2894,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 		return;
 	}
 	aprint_normal_dev(self, "interrupting at %s\n", intrstr);
+
+	sc->sc_lro_enabled = CONFIG_LRO_ENABLED;
 
 	sc->sc_txringnum = AQ_TXRING_NUM;
 	sc->sc_rxringnum = AQ_RXRING_NUM;
@@ -2925,6 +3032,11 @@ aq_iff(struct aq_softc *sc)
 static int
 aq_ifmedia_change(struct ifnet * const ifp)
 {
+#ifdef XXX_DUMP_MACTABLE
+	struct aq_softc *sc = ifp->if_softc;
+	aq_dump_macaddr(sc);
+#endif
+
 	return aq_mediachange(ifp);
 }
 
