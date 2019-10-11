@@ -1,3 +1,18 @@
+//
+// TODO
+//	multicast
+//	ioctl
+//	lock
+//	hardware offloading
+//	tuning
+//	interrupt moderation
+//	rss
+//	msix
+//	vlan
+//	cleanup source
+//	fw1x (revision A0)
+//
+
 //#define XXX_FORCE_32BIT_PA
 //#define XXX_DEBUG_PMAP_EXTRACT
 #undef USE_CALLOUT_TICK
@@ -3025,8 +3040,6 @@ aq_detach(device_t self, int flags __unused)
 
 		ether_ifdetach(ifp);
 		if_detach(ifp);
-
-		// XXX: free mbufs
 
 		aprint_debug_dev(sc->sc_dev, "%s: bus_space_unmap\n", __func__);
 		bus_space_unmap(sc->sc_iot, sc->sc_ioh, sc->sc_iosize);
