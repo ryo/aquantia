@@ -1,6 +1,5 @@
 #define XXX_FORCE_32BIT_PA
 #define XXX_DEBUG_PMAP_EXTRACT
-#undef XXX_FORCE_PROMISC
 #undef USE_CALLOUT_TICK
 #define XXX_DUMP_RX_COUNTER
 #define XXX_DUMP_RX_MBUF
@@ -763,8 +762,8 @@ typedef struct aq_tx_desc {
 //#define AQ_RXRING_NUM	16	/* <= AQ_RINGS_MAX */
 #define AQ_TXRING_NUM	1	/* <= AQ_RINGS_MAX */
 #define AQ_RXRING_NUM	1	/* <= AQ_RINGS_MAX */
-#define AQ_TXD_NUM	32	/* per ring. must be 8*n */
-#define AQ_RXD_NUM	32	/* per ring. must be 8*n */
+#define AQ_TXD_NUM	2048	/* per ring. must be 8*n */
+#define AQ_RXD_NUM	2048	/* per ring. must be 8*n */
 
 #define LINKUP_IRQ	0
 
@@ -874,8 +873,9 @@ struct aq_softc {
 	callout_t sc_tick_ch;
 #endif
 	struct ethercom sc_ethercom;
-	struct ifmedia sc_media;
 	struct ether_addr sc_enaddr;
+	struct ifmedia sc_media;
+	unsigned short sc_if_flags;	/* last if_flags */
 
 	aq_hw_stats_s_t sc_statistics[2];
 	int sc_statistics_idx;
@@ -3466,10 +3466,24 @@ aq_rx_intr(struct aq_rxring *rxring)
 static int
 aq_ifflags_cb(struct ethercom *ec)
 {
+	struct ifnet *ifp = &ec->ec_if;
+	struct aq_softc *sc = ifp->if_softc;
+	unsigned short iffchange;
+
 	//XXX: need lock
 	printf("%s:%d\n", __func__, __LINE__);
 
-	return 0;}
+
+	iffchange = ifp->if_flags ^ sc->sc_if_flags;
+
+	if ((iffchange & IFF_PROMISC) != 0) {
+		AQ_WRITE_REG_BIT(sc, RPFL2BC_EN_ADR, RPFL2BC_PROMISC_MODE,
+		    (ifp->if_flags & IFF_PROMISC) ? 1 : 0);
+	}
+
+	sc->sc_if_flags = ifp->if_flags;
+	return 0;
+}
 
 
 static int
@@ -3500,10 +3514,6 @@ aq_init(struct ifnet *ifp)
 	}
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_ADR, RPB_RPF_RX_BUF_EN, 1);
 
-#ifdef XXX_FORCE_PROMISC
-	AQ_WRITE_REG_BIT(sc, RPFL2BC_EN_ADR, RPFL2BC_PROMISC_MODE, 1);
-#endif
-
 	//XXX
 	(void)&dump_txrings;
 	(void)&dump_rxrings;
@@ -3527,6 +3537,8 @@ aq_init(struct ifnet *ifp)
 	ifp->if_flags &= ~IFF_OACTIVE;
 
  aq_init_failure:
+
+	sc->sc_if_flags = ifp->if_flags;
 	return error;
 }
 
