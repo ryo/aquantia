@@ -3,7 +3,7 @@
 #undef XXX_FORCE_PROMISC
 #undef USE_CALLOUT_TICK
 #define XXX_DUMP_RX_COUNTER
-
+#define XXX_DUMP_RX_MBUF
 
 
 /*	$NetBSD$	*/
@@ -657,20 +657,21 @@ struct aq_rx_desc_read {
 
 struct aq_rx_desc_wb {
 	uint32_t type;
-#define RXDESC_TYPE_RSS		__BITS(3,0)
-#define RXDESC_TYPE_PKTTYPE	__BITS(4,11)
-#define RXDESC_TYPE_RDM_ERR	__BIT(12)
-#define RXDESC_TYPE_RESERVED	__BITS(13,18)
-#define RXDESC_TYPE_CNTL	__BITS(19,20)
-#define RXDESC_TYPE_SPH		__BIT(21)
-#define RXDESC_TYPE_HDR_LEN	__BITS(22,31)
+#define RXDESC_TYPE_RSS			__BITS(3,0)
+#define RXDESC_TYPE_PKTTYPE		__BITS(4,11)
+#define RXDESC_TYPE_RDM_ERR		__BIT(12)
+#define RXDESC_TYPE_RESERVED		__BITS(13,18)
+#define RXDESC_TYPE_CNTL		__BITS(19,20)
+#define RXDESC_TYPE_SPH			__BIT(21)
+#define RXDESC_TYPE_HDR_LEN		__BITS(22,31)
 	uint32_t rss_hash;
 	uint16_t status;
-#define RXDESC_STATUS_DD	__BIT(0)
-#define RXDESC_STATUS_EOP	__BIT(1)
-#define RXDESC_STATUS_STAT	__BITS(2,5)
-#define RXDESC_STATUS_ESTAT	__BITS(6,11)
-#define RXDESC_STATUS_RSC_CNT	__BITS(12,15)
+#define RXDESC_STATUS_DD		__BIT(0)
+#define RXDESC_STATUS_EOP		__BIT(1)
+#define RXDESC_STATUS_MAC_DMA_ERR	__BIT(2)
+#define RXDESC_STATUS_STAT		__BITS(2,5)
+#define RXDESC_STATUS_ESTAT		__BITS(6,11)
+#define RXDESC_STATUS_RSC_CNT		__BITS(12,15)
 	uint16_t pkt_len;
 	uint16_t next_desc_ptr;
 	uint16_t vlan;
@@ -2422,6 +2423,17 @@ aq_txring_free(struct aq_softc *sc, struct aq_txring *txring)
 	}
 }
 
+static inline void
+aq_rxring_reset_desc(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
+{
+	/* refill rxdesc, and sync */
+	rxring->ring_rxdesc[idx].read.buf_addr = htole64(rxring->ring_mbufs[idx].dmamap->dm_segs[0].ds_addr);
+	rxring->ring_rxdesc[idx].read.hdr_addr = 0;
+	bus_dmamap_sync(sc->sc_dmat, rxring->ring_rxdesc_dmamap,
+	    sizeof(aq_rx_desc_t) * idx, sizeof(aq_rx_desc_t),
+	    BUS_DMASYNC_PREWRITE);
+}
+
 /* allocate mbuf and unload dmamap */
 static int
 aq_rxring_add(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
@@ -2459,12 +2471,7 @@ aq_rxring_add(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
 	bus_dmamap_sync(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap, 0,
 	    rxring->ring_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_PREREAD);
 
-	/* refill rxdesc, and sync */
-	rxring->ring_rxdesc[idx].read.buf_addr = htole64(rxring->ring_mbufs[idx].dmamap->dm_segs[0].ds_addr);
-	rxring->ring_rxdesc[idx].read.hdr_addr = 0;
-	bus_dmamap_sync(sc->sc_dmat, rxring->ring_rxdesc_dmamap,
-	    sizeof(aq_rx_desc_t) * idx, sizeof(aq_rx_desc_t),
-	    BUS_DMASYNC_PREWRITE);
+	aq_rxring_reset_desc(sc, rxring, idx);
 
 	return 0;
 }
@@ -3217,10 +3224,10 @@ aq_rx_intr(struct aq_rxring *rxring)
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
 	const int ringidx = rxring->ring_index;
 	aq_rx_desc_t *rxd;
-	struct mbuf *m;
+	struct mbuf *m, *m0, *mprev;
 	uint32_t rxd_type, rxd_hash;
 	uint16_t rxd_status, rxd_pktlen, rxd_nextdescptr, rxd_vlan;
-	unsigned int idx;
+	unsigned int idx, amount;
 
 	if (rxring->ring_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK))
 		return 0;
@@ -3241,6 +3248,8 @@ aq_rx_intr(struct aq_rxring *rxring)
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(ringidx)), rxring->ring_readidx);
 #endif
 
+	m0 = mprev = NULL;
+	amount = 0;
 	for (idx = rxring->ring_readidx;
 	    idx != AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK);
 	    idx = RXRING_NEXTIDX(idx)) {
@@ -3250,14 +3259,25 @@ aq_rx_intr(struct aq_rxring *rxring)
 		    BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE);
 
 		rxd = &rxring->ring_rxdesc[idx];
-		rxd_type = le32toh(rxd->wb.type);
-		rxd_hash = le32toh(rxd->wb.rss_hash);
 		rxd_status = le16toh(rxd->wb.status);
+
+		if ((rxd_status & RXDESC_STATUS_DD) == 0)
+			break;	/* not yet done */
+
+		rxd_type = le32toh(rxd->wb.type);
+
+		if (((rxd_status & RXDESC_STATUS_MAC_DMA_ERR) != 0) &&
+		    ((rxd_type & RXDESC_TYPE_RDM_ERR) != 0)) {
+			aq_rxring_reset_desc(sc, rxring, idx);
+			goto rx_next;
+		}
+
+		rxd_hash = le32toh(rxd->wb.rss_hash);
 		rxd_pktlen = le16toh(rxd->wb.pkt_len);
 		rxd_nextdescptr = le16toh(rxd->wb.next_desc_ptr);
 		rxd_vlan = le16toh(rxd->wb.vlan);
 
-		printf("desc[%d] type=%08x, hash=%08x, status=%08x, pktlen=%u, nextdesc=%u, vlan=%x\n",
+		printf("desc[%d] type=0x%08x, hash=0x%08x, status=0x%08x, pktlen=%u, nextdesc=%u, vlan=0x%x\n",
 		    idx, rxd_type, rxd_hash, rxd_status, rxd_pktlen, rxd_nextdescptr, rxd_vlan);
 		printf(" type: rss=%ld, pkttype=%ld, rdm=%ld, cntl=%ld, sph=%ld, hdrlen=%ld\n",
 		    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSS),
@@ -3274,16 +3294,35 @@ aq_rx_intr(struct aq_rxring *rxring)
 		m = rxring->ring_mbufs[idx].m;
 		rxring->ring_mbufs[idx].m = NULL;
 
-		hexdump(printf, "mbuf", m->m_data, rxd_pktlen);
-
-		/* enqueue an mbuf */
 		m->m_len = rxd_pktlen;
-		m_set_rcvif(m, ifp);
-		m->m_pkthdr.len = rxd_pktlen;
-		if_percpuq_enqueue(ifp->if_percpuq, m);
+#ifdef XXX_DUMP_RX_MBUF
+		hexdump(printf, "mbuf", m->m_data, m->m_len);	// dump this mbuf
+#endif
+
+		if (m0 == NULL) {
+			m0 = m;
+			amount = m->m_len;
+		} else {
+			amount += m->m_len;
+			if (m->m_flags & M_PKTHDR)
+				m_remove_pkthdr(m);
+			mprev->m_next = m;
+		}
+		mprev = m;
+
+		if ((rxd_status & RXDESC_STATUS_EOP) != 0) {
+			/* last buffer */
+			m_set_rcvif(m0, ifp);
+			m->m_pkthdr.len = amount;
+			if_percpuq_enqueue(ifp->if_percpuq, m);
+
+			m0 = mprev = NULL;
+			amount = 0;
+		}
 
 		/* refill, and update tail */
 		aq_rxring_add(sc, rxring, idx);
+ rx_next:
 		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(ringidx), idx);
 	}
 	rxring->ring_readidx = idx;
