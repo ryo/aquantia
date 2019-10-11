@@ -856,6 +856,7 @@ static int aq_detach(device_t, int);
 
 static int aq_ifmedia_change(struct ifnet * const);
 static void aq_ifmedia_status(struct ifnet * const, struct ifmediareq *);
+static int aq_ifflags_cb(struct ethercom *);
 static int aq_init(struct ifnet *);
 static void aq_start(struct ifnet *);
 static void aq_stop(struct ifnet *, int);
@@ -2846,6 +2847,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	if_attach(ifp);
 	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, sc->sc_enaddr.ether_addr_octet);
+	ether_set_ifflags_cb(&sc->sc_ethercom, aq_ifflags_cb);
 
 	aq_enable_intr(sc, true, false);
 
@@ -3294,6 +3296,15 @@ aq_rx_intr(struct aq_rxring *rxring)
 
 	return 1;
 }
+
+static int
+aq_ifflags_cb(struct ethercom *ec)
+{
+	//XXX: need lock
+	printf("%s:%d\n", __func__, __LINE__);
+
+	return 0;}
+
 
 static int
 aq_init(struct ifnet *ifp)
