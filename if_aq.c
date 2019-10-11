@@ -1168,7 +1168,7 @@ aq_get_mac_addr(struct aq_softc *sc)
 }
 
 static void
-aq_dump_macaddr(struct aq_softc *sc)
+aq_dump_mactable(struct aq_softc *sc)
 {
 	int i;
 	uint32_t h, l;
@@ -1176,7 +1176,7 @@ aq_dump_macaddr(struct aq_softc *sc)
 	for (i = 0; i <= AQ_HW_MAC_MAX; i++) {
 		l = AQ_READ_REG(sc, RPFL2UC_DAFLSW_ADR(i));
 		h = AQ_READ_REG(sc, RPFL2UC_DAFMSW_ADR(i));
-		printf("MAC TABLE[%d] %02x:%02x:%02x:%02x:%02x:%02x enable=%d\n",
+		printf("MAC TABLE[%d] %02x:%02x:%02x:%02x:%02x:%02x enable=%d, actf=%ld\n",
 		    i,
 		    (h >> 8) & 0xff,
 		    h & 0xff,
@@ -1184,7 +1184,8 @@ aq_dump_macaddr(struct aq_softc *sc)
 		    (l >> 16) & 0xff,
 		    (l >> 8) & 0xff,
 		    l & 0xff,
-		    (h & RPFL2UC_DAFMSW_EN) ? 1 : 0);
+		    (h & RPFL2UC_DAFMSW_EN) ? 1 : 0,
+		    AQ_READ_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(i), RPFL2UC_DAFMSW_ACTF));
 	}
 }
 
@@ -1209,6 +1210,7 @@ aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
 	AQ_WRITE_REG(sc, RPFL2UC_DAFLSW_ADR(index), l);
 	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_MACADDR_HI, h);
 	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_EN, 1);
+	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_ACTF, 1);
 
 	return 0;
 }
@@ -2268,6 +2270,12 @@ aq_hw_udp_rss_enable(struct aq_softc *sc, bool enable)
 	}
 }
 
+static void
+aq_update_vlan_filters(struct aq_softc *sc)
+{
+	//XXX: notyet
+}
+
 static int
 aq_hw_init(struct aq_softc *sc)
 {
@@ -3034,7 +3042,7 @@ aq_ifmedia_change(struct ifnet * const ifp)
 {
 #ifdef XXX_DUMP_MACTABLE
 	struct aq_softc *sc = ifp->if_softc;
-	aq_dump_macaddr(sc);
+	aq_dump_mactable(sc);
 #endif
 
 	return aq_mediachange(ifp);
@@ -3469,8 +3477,7 @@ aq_init(struct ifnet *ifp)
 	//XXX: need lock
 	printf("%s:%d\n", __func__, __LINE__);
 
-//	aq_update_vlan_filters()
-
+	aq_update_vlan_filters(sc);
 
 	// start TX
 	for (i = 0; i < sc->sc_txringnum; i++) {
