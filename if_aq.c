@@ -1,9 +1,10 @@
-#define XXX_FORCE_32BIT_PA
-#define XXX_DEBUG_PMAP_EXTRACT
+//#define XXX_FORCE_32BIT_PA
+//#define XXX_DEBUG_PMAP_EXTRACT
 #undef USE_CALLOUT_TICK
-#define XXX_DUMP_RX_COUNTER
-#define XXX_DUMP_RX_MBUF
-#define XXX_DUMP_MACTABLE
+//#define XXX_RXINTR_DEBUG
+//#define XXX_DUMP_RX_COUNTER
+//#define XXX_DUMP_RX_MBUF
+//#define XXX_DUMP_MACTABLE
 
 //
 // terminology
@@ -1174,6 +1175,7 @@ aq_get_mac_addr(struct aq_softc *sc)
 	return 0;
 }
 
+#ifdef XXX_DUMP_MACTABLE
 static void
 aq_dump_mactable(struct aq_softc *sc)
 {
@@ -1195,6 +1197,7 @@ aq_dump_mactable(struct aq_softc *sc)
 		    AQ_READ_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(i), RPFL2UC_DAFMSW_ACTF));
 	}
 }
+#endif
 
 /* set multicast filter, or own address */
 static int
@@ -3354,15 +3357,17 @@ aq_rx_intr(struct aq_rxring *rxring)
 	const int ringidx = rxring->ring_index;
 	aq_rx_desc_t *rxd;
 	struct mbuf *m, *m0, *mprev;
-	uint32_t rxd_type, rxd_hash;
-	uint16_t rxd_status, rxd_pktlen, rxd_nextdescptr, rxd_vlan;
+	uint32_t rxd_type, rxd_hash __unused;
+	uint16_t rxd_status, rxd_pktlen, rxd_nextdescptr __unused, rxd_vlan __unused;
 	unsigned int idx, amount;
 
 	if (rxring->ring_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK))
 		return 0;
 
+#ifdef XXX_RXINTR_DEBUG
 	//XXX: need lock
 	printf("# %s:%d\n", __func__, __LINE__);
+#endif
 
 #ifdef XXX_DUMP_RX_COUNTER
 	printf("RXPKT:%lu, RXBYTE:%lu, DMADROP:%u\n",
@@ -3371,7 +3376,7 @@ aq_rx_intr(struct aq_rxring *rxring)
 	    AQ_READ_REG(sc, RX_DMA_DROP_PKT_CNT_ADR));
 #endif
 
-#if 1
+#ifdef XXX_RXINTR_DEBUG
 	printf("%s:%d: begin: RX_DMA_DESC_HEAD/TAIL=%lu/%u, readidx=%u\n", __func__, __LINE__,
 	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK),
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(ringidx)), rxring->ring_readidx);
@@ -3401,11 +3406,12 @@ aq_rx_intr(struct aq_rxring *rxring)
 			goto rx_next;
 		}
 
-		rxd_hash = le32toh(rxd->wb.rss_hash);
 		rxd_pktlen = le16toh(rxd->wb.pkt_len);
-		rxd_nextdescptr = le16toh(rxd->wb.next_desc_ptr);
-		rxd_vlan = le16toh(rxd->wb.vlan);
+//		rxd_nextdescptr = le16toh(rxd->wb.next_desc_ptr);
+//		rxd_hash = le32toh(rxd->wb.rss_hash);
+//		rxd_vlan = le16toh(rxd->wb.vlan);
 
+#ifdef XXX_RXINTR_DEBUG
 		printf("desc[%d] type=0x%08x, hash=0x%08x, status=0x%08x, pktlen=%u, nextdesc=%u, vlan=0x%x\n",
 		    idx, rxd_type, rxd_hash, rxd_status, rxd_pktlen, rxd_nextdescptr, rxd_vlan);
 		printf(" type: rss=%ld, pkttype=%ld, rdm=%ld, cntl=%ld, sph=%ld, hdrlen=%ld\n",
@@ -3415,6 +3421,7 @@ aq_rx_intr(struct aq_rxring *rxring)
 		    __SHIFTOUT(rxd_type, RXDESC_TYPE_CNTL),
 		    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
 		    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
+#endif
 
 
 		bus_dmamap_sync(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap, 0,
@@ -3456,7 +3463,7 @@ aq_rx_intr(struct aq_rxring *rxring)
 	}
 	rxring->ring_readidx = idx;
 
-#if 1
+#ifdef XXX_RXINTR_DEBUG
 	printf("%s:%d: end: RX_DMA_DESC_HEAD/TAIL=%lu/%u, readidx=%u\n", __func__, __LINE__,
 	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK),
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(ringidx)), rxring->ring_readidx);
