@@ -288,11 +288,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define RPB_RXBBUF_SIZE_ADR(n)			(0x5710 + (n) * 0x10)
 #define  RPB_RXBBUF_SIZE_MSK			__BITS(8,0)
 
-#define RPB_RXBXOFF_EN_ADR(n)			(0x5714 + (n) * 0x10)
-#define  RPB_RXBXOFF_EN				__BIT(31)
-#define RPB_RXBHI_THRESH_ADR(n)			RPB_RXBXOFF_EN_ADR(n)
-#define  RPB_RXBHI_THRESH_MSK			__BITS(29,16)
-#define  RPB_RXBLO_THRESH_MSK			__BITS(13,0)
+#define RPB_RXB_XOFF_ADR(n)			(0x5714 + (n) * 0x10)
+#define  RPB_RXB_XOFF_EN				__BIT(31)
+#define  RPB_RXB_XOFF_THRESH_HI			__BITS(29,16)
+#define  RPB_RXB_XOFF_THRESH_LO			__BITS(13,0)
 
 
 
@@ -372,10 +371,9 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define TPB_TXBBUF_SIZE_ADR(buffer)		(0x7910 + (buffer) * 0x10)
 #define  TPB_TXBBUF_SIZE_MSK			__BITS(7,0)
-#define TPB_TXBHI_THRESH_ADR(buffer)		(0x7914 + (buffer) * 0x10)
-#define  TPB_TXBHI_THRESH_MSK			__BITS(16,28)
-#define TPB_TXBLO_THRESH_ADR(buffer)		(0x7914 + (buffer) * 0x10)
-#define  TPB_TXBLO_THRESH_MSK			__BITS(12,0)
+#define TPB_TXB_THRESH_ADR(buffer)		(0x7914 + (buffer) * 0x10)
+#define  TPB_TXB_THRESH_HI			__BITS(16,28)
+#define  TPB_TXB_THRESH_LO			__BITS(12,0)
 
 #define AQ_HW_TX_DMA_TOTAL_REQ_LIMIT_ADR	0x7b20
 #define TX_DMA_INT_DESC_WRWB_EN_ADR		0x7b40
@@ -2053,20 +2051,18 @@ aq_hw_qos_set(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, TPS_DESC_TCTWEIGHT_ADR(tc), TPS_DESC_TCTWEIGHT_MSK, 0x1e);
 
 	/* Tx buf size */
+	tc = 0;
 	buff_size = AQ_HW_TXBUF_MAX;
-
 	AQ_WRITE_REG_BIT(sc, TPB_TXBBUF_SIZE_ADR(tc), TPB_TXBBUF_SIZE_MSK, buff_size);
-	AQ_WRITE_REG_BIT(sc, TPB_TXBHI_THRESH_ADR(tc), TPB_TXBHI_THRESH_MSK, (buff_size * (1024 / 32) * 66) / 100);
-	AQ_WRITE_REG_BIT(sc, TPB_TXBLO_THRESH_ADR(tc), TPB_TXBLO_THRESH_MSK, (buff_size * (1024 / 32) * 50) / 100);
+	AQ_WRITE_REG_BIT(sc, TPB_TXB_THRESH_ADR(tc), TPB_TXB_THRESH_HI, (buff_size * (1024 / 32) * 66) / 100);
+	AQ_WRITE_REG_BIT(sc, TPB_TXB_THRESH_ADR(tc), TPB_TXB_THRESH_LO, (buff_size * (1024 / 32) * 50) / 100);
 
 	/* QoS Rx buf size per TC */
 	tc = 0;
 	buff_size = AQ_HW_RXBUF_MAX;
-
 	AQ_WRITE_REG_BIT(sc, RPB_RXBBUF_SIZE_ADR(tc), RPB_RXBBUF_SIZE_MSK, buff_size);
-
-	AQ_WRITE_REG_BIT(sc, RPB_RXBHI_THRESH_ADR(tc), RPB_RXBHI_THRESH_MSK, (buff_size * (1024 / 32) * 66) / 100);
-	AQ_WRITE_REG_BIT(sc, RPB_RXBHI_THRESH_ADR(tc), RPB_RXBLO_THRESH_MSK, (buff_size * (1024 / 32) * 50) / 100);
+	AQ_WRITE_REG_BIT(sc, RPB_RXB_XOFF_ADR(tc), RPB_RXB_XOFF_THRESH_HI, (buff_size * (1024 / 32) * 66) / 100);
+	AQ_WRITE_REG_BIT(sc, RPB_RXB_XOFF_ADR(tc), RPB_RXB_XOFF_THRESH_LO, (buff_size * (1024 / 32) * 50) / 100);
 
 	/* QoS 802.1p priority -> TC mapping */
 	int i_priority;
@@ -2227,7 +2223,7 @@ aq_if_update_admin_status(struct aq_softc *sc)
 		changed = 1;
 
 		/* turn on/off RX Pause in RPB */
-		AQ_WRITE_REG_BIT(sc, RPB_RXBXOFF_EN_ADR(0), RPB_RXBXOFF_EN, fc_neg.fc_rx ? 1 : 0);
+		AQ_WRITE_REG_BIT(sc, RPB_RXB_XOFF_ADR(0), RPB_RXB_XOFF_EN, fc_neg.fc_rx ? 1 : 0);
 
 		aq_mediastatus_update(sc, link_speed, &fc_neg);
 
@@ -2241,7 +2237,7 @@ aq_if_update_admin_status(struct aq_softc *sc)
 		changed = 1;
 
 		/* turn off RX Pause in RPB */
-		AQ_WRITE_REG_BIT(sc, RPB_RXBXOFF_EN_ADR(0), RPB_RXBXOFF_EN, 0);
+		AQ_WRITE_REG_BIT(sc, RPB_RXB_XOFF_ADR(0), RPB_RXB_XOFF_EN, 0);
 
 		aq_mediastatus_update(sc, link_speed, &fc_neg);
 	}
