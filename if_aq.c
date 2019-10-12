@@ -16,6 +16,7 @@
 //#define XXX_FORCE_32BIT_PA
 //#define XXX_DEBUG_PMAP_EXTRACT
 #undef USE_CALLOUT_TICK
+#define XXX_INTR_DEBUG
 //#define XXX_RXINTR_DEBUG
 //#define XXX_DUMP_RX_COUNTER
 //#define XXX_DUMP_RX_MBUF
@@ -798,8 +799,8 @@ struct aq_txring {
 		struct mbuf *m;
 		bus_dmamap_t dmamap;
 	} ring_mbufs[AQ_TXD_NUM];
-	int ring_prodidx;
-	int ring_considx;
+	unsigned int ring_prodidx;
+	unsigned int ring_considx;
 	int ring_nfree;
 };
 
@@ -939,6 +940,10 @@ static void aq_txring_free(struct aq_softc *, struct aq_txring *);
 static int aq_rxring_alloc(struct aq_softc *, struct aq_rxring *);
 static void aq_rxring_free(struct aq_softc *, struct aq_rxring *);
 
+#ifdef  XXX_INTR_DEBUG
+static int aq_tx_intr_poll(struct aq_txring *);
+static int aq_rx_intr_poll(struct aq_rxring *);
+#endif
 static int aq_tx_intr(struct aq_txring *);
 static int aq_rx_intr(struct aq_rxring *);
 
@@ -2800,17 +2805,33 @@ aq_intr(void *arg)
 	int i;
 
 	status = AQ_READ_REG(sc, AQ_INTR_STATUS);
-//	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()), AQ_READ_REG(sc, AQ_INTR_MASK), status, AQ_READ_REG(sc, AQ_INTR_STATUS));
+#ifdef XXX_INTR_DEBUG
+	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()), AQ_READ_REG(sc, AQ_INTR_MASK), status, AQ_READ_REG(sc, AQ_INTR_STATUS));
+#endif
 
 	if (status & __BIT(LINKUP_IRQ)) {
 		handled += aq_if_update_admin_status(sc);
 	}
 
-	for (i = 0; i < sc->sc_ringnum; i++) {
+	for (i = 0; i < sc->sc_rxringnum; i++) {
 		if (status & __BIT(i)) {
 			handled += aq_rx_intr(&sc->sc_rxring[i]);
+		}
+#ifdef XXX_INTR_DEBUG
+		else if (aq_rx_intr_poll(&sc->sc_rxring[i]) != 0) {
+			printf("INTR: RX: rxring[%d] modified, but no INTR status\n", i);
+		}
+#endif
+	}
+	for (i = 0; i < sc->sc_txringnum; i++) {
+		if (status & __BIT(i)) {
 			handled += aq_tx_intr(&sc->sc_txring[i]);
 		}
+#ifdef XXX_INTR_DEBUG
+		else if (aq_tx_intr_poll(&sc->sc_txring[i]) != 0) {
+			printf("INTR: TX: txring[%d] modified, but no INTR status\n", i);
+		}
+#endif
 	}
 
 	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR, 0xffffffff);	//XXX
@@ -3273,12 +3294,24 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	return 0;
 }
 
+#ifdef XXX_INTR_DEBUG
+static int
+aq_tx_intr_poll(struct aq_txring *txring)
+{
+	struct aq_softc *sc = txring->ring_sc;
+
+	if (txring->ring_considx == AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_ADR(txring->ring_index), TX_DMA_DESC_HEAD_PTR_MSK))
+		return 0;
+	return 1;
+}
+#endif
+
 static int
 aq_tx_intr(struct aq_txring *txring)
 {
 	struct aq_softc *sc = txring->ring_sc;
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	int idx, hw_head;
+	unsigned int idx, hw_head;
 
 	//XXX: need lock
 
@@ -3361,6 +3394,18 @@ aq_tx_intr(struct aq_txring *txring)
 
 	return 1;
 }
+
+#ifdef  XXX_INTR_DEBUG
+static int
+aq_rx_intr_poll(struct aq_rxring *rxring)
+{
+	struct aq_softc *sc = rxring->ring_sc;
+
+	if (rxring->ring_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(rxring->ring_index), RX_DMA_DESC_HEAD_PTR_MSK))
+		return 0;
+	return 1;
+}
+#endif
 
 static int
 aq_rx_intr(struct aq_rxring *rxring)
