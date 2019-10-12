@@ -770,20 +770,20 @@ typedef struct aq_tx_desc {
 #define AQ_TXDESC_CTL2_CTX_IDX		__BIT(12)
 } __packed aq_tx_desc_t;
 
+/* hardware restrictions */
 #define AQ_RINGS_MAX	32
 #define AQ_RXD_MIN	32
 #define AQ_TXD_MIN	32
 #define AQ_RXD_MAX	8184	/* = 0x1ff8 */
 #define AQ_TXD_MAX	8184	/* = 0x1ff8 */
 
-//#define AQ_TXRING_NUM	16	/* <= AQ_RINGS_MAX */
-//#define AQ_RXRING_NUM	16	/* <= AQ_RINGS_MAX */
-#define AQ_TXRING_NUM	1	/* <= AQ_RINGS_MAX */
-#define AQ_RXRING_NUM	1	/* <= AQ_RINGS_MAX */
+/* configuration for this driver */
+#define AQ_TXRING_NUM	1
+#define AQ_RXRING_NUM	1
 #define AQ_TXD_NUM	2048	/* per ring. must be 8*n */
 #define AQ_RXD_NUM	2048	/* per ring. must be 8*n */
 
-#define LINKUP_IRQ	0
+#define LINKUP_IRQ	0	/* XXX: shared with ring[0] */
 
 
 struct aq_txring {
@@ -3127,6 +3127,8 @@ aq_txring_init(struct aq_softc *sc, struct aq_txring *txring, bool enable_dma)
 		/* TX descriptor size */
 		AQ_WRITE_REG_BIT(sc, TX_DMA_DESC_LEN_ADR(ringidx), TX_DMA_DESC_LEN_MSK,
 		    AQ_TXD_NUM / 8);
+
+		/* reset TAIL pointer */
 		AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(ringidx), 0);
 		AQ_WRITE_REG(sc, TX_DMA_DESC_WRWB_THRESH_ADR(ringidx), 0);
 
@@ -3191,6 +3193,10 @@ aq_rxring_init(struct aq_softc *sc, struct aq_rxring *rxring, bool enable_dma)
 
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_HEADER_SPLIT, 0);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_VLAN_STRIP, 0);
+
+		/* reset HEAD and TAIL pointer */
+		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK, 0);
+		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(ringidx), AQ_RXD_NUM - 1);
 
 		/* Rx ring set mode */
 
@@ -3564,17 +3570,14 @@ aq_init(struct ifnet *ifp)
 
 	aq_update_vlan_filters(sc);
 
-	// start TX
+	/* start TX */
 	for (i = 0; i < sc->sc_txringnum; i++) {
 		aq_txring_init(sc, &sc->sc_txring[i], true);
 	}
 	AQ_WRITE_REG_BIT(sc, TPB_TX_BUF_ADR, TPB_TX_BUF_EN, 1);
 
-	// start RX
+	/* start RX */
 	for (i = 0; i < sc->sc_rxringnum; i++) {
-		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(i), RX_DMA_DESC_HEAD_PTR_MSK, 0);
-		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(i), AQ_RXD_NUM - 1);
-
 		error = aq_rxring_init(sc, &sc->sc_rxring[i], true);
 		if (error != 0)
 			goto aq_init_failure;
