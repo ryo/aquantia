@@ -365,7 +365,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define RX_DMA_DESC_LEN_ADR(n)			(0x5b08 + (n) * 0x20)
 #define  RX_DMA_DESC_LEN_MSK			__BITS(12,3)	/* RXD_NUM/8 */
 #define  RX_DMA_DESC_RESET			__BIT(25)
-#define  RX_DMA_DESC_HDR_SPLIT			__BIT(28)
+#define  RX_DMA_DESC_HEADER_SPLIT		__BIT(28)
 #define  RX_DMA_DESC_VLAN_STRIP			__BIT(29)
 #define  RX_DMA_DESC_ENABLE			__BIT(31)
 
@@ -3189,7 +3189,7 @@ aq_rxring_init(struct aq_softc *sc, struct aq_rxring *rxring, bool enable_dma)
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_BUFSIZE_ADR(ringidx), RX_DMA_DESC_BUFSIZE_DATA_MSK, MCLBYTES / 1024);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_BUFSIZE_ADR(ringidx), RX_DMA_DESC_BUFSIZE_HDR_MSK, 0 / 1024);
 
-		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_HDR_SPLIT, 0);
+		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_HEADER_SPLIT, 0);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_VLAN_STRIP, 0);
 
 		/* Rx ring set mode */
