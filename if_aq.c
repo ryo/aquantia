@@ -772,8 +772,8 @@ typedef struct aq_tx_desc {
 #define AQ_RINGS_MAX	32
 #define AQ_RXD_MIN	32
 #define AQ_TXD_MIN	32
-#define AQ_RXD_MAX	4096	/* in fact up to 8184 */
-#define AQ_TXD_MAX	4096	/* in fact up to 8184 */
+#define AQ_RXD_MAX	8184	/* = 0x1ff8 */
+#define AQ_TXD_MAX	8184	/* = 0x1ff8 */
 
 //#define AQ_TXRING_NUM	16	/* <= AQ_RINGS_MAX */
 //#define AQ_RXRING_NUM	16	/* <= AQ_RINGS_MAX */
