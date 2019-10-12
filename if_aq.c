@@ -939,7 +939,7 @@ static void aq_txring_free(struct aq_softc *, struct aq_txring *);
 static int aq_rxring_alloc(struct aq_softc *, struct aq_rxring *);
 static void aq_rxring_free(struct aq_softc *, struct aq_rxring *);
 
-static int aq_tx_intr(struct aq_txring *, bool);
+static int aq_tx_intr(struct aq_txring *);
 static int aq_rx_intr(struct aq_rxring *);
 
 static int fw1x_reset(struct aq_softc *);
@@ -2809,7 +2809,7 @@ aq_intr(void *arg)
 	for (i = 0; i < sc->sc_ringnum; i++) {
 		if (status & __BIT(i)) {
 			handled += aq_rx_intr(&sc->sc_rxring[i]);
-			handled += aq_tx_intr(&sc->sc_txring[i], false);
+			handled += aq_tx_intr(&sc->sc_txring[i]);
 		}
 	}
 
@@ -3274,7 +3274,7 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 }
 
 static int
-aq_tx_intr(struct aq_txring *txring, bool watchdog)
+aq_tx_intr(struct aq_txring *txring)
 {
 	struct aq_softc *sc = txring->ring_sc;
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
@@ -3685,7 +3685,7 @@ aq_watchdog(struct ifnet *ifp)
 		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(txring->ring_index)));
 #endif
 
-		aq_tx_intr(txring, true);
+		aq_tx_intr(txring);
 	}
 
 	aq_init(ifp);
