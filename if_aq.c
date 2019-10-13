@@ -672,29 +672,29 @@ typedef struct fw2x_mailbox {		/* struct fwHostInterface */
 	/* ... */
 } __packed fw2x_mailbox_t;
 
-typedef enum aq_fw_link_speed {
+typedef enum aq_link_speed {
 	AQ_LINK_NONE	= 0,
 	AQ_LINK_100M	= (1 << 0),
 	AQ_LINK_1G	= (1 << 1),
 	AQ_LINK_2G5	= (1 << 2),
 	AQ_LINK_5G	= (1 << 3),
 	AQ_LINK_10G	= (1 << 4)
-} aq_fw_link_speed_t;
+} aq_link_speed_t;
 #define AQ_LINK_ALL	(AQ_LINK_100M | AQ_LINK_1G | AQ_LINK_2G5 | \
 			 AQ_LINK_5G | AQ_LINK_10G )
 #define AQ_LINK_AUTO	AQ_LINK_ALL
 
-typedef enum aq_fw_link_fc {
-	AQ_FW_FC_NONE = 0,
-	AQ_FW_FC_ENABLE_RX = __BIT(0),
-	AQ_FW_FC_ENABLE_TX = __BIT(1),
-	AQ_FW_FC_ENABLE_ALL = (AQ_FW_FC_ENABLE_RX | AQ_FW_FC_ENABLE_TX)
-} aq_fw_link_fc_t;
+typedef enum aq_link_fc {
+	AQ_FC_NONE = 0,
+	AQ_FC_RX = __BIT(0),
+	AQ_FC_TX = __BIT(1),
+	AQ_FC_ALL = (AQ_FC_RX | AQ_FC_TX)
+} aq_link_fc_t;
 
-typedef enum aq_fw_eee {
-	AQ_FW_EEE_NONE = 0,
-	AQ_FW_EEE_ENABLE = 1
-} aq_fw_link_eee_t;
+typedef enum aq_link_eee {
+	AQ_EEE_DISABLE = 0,
+	AQ_EEE_ENABLE = 1
+} aq_link_eee_t;
 
 typedef enum aq_hw_fw_mpi_state_e {
 	MPI_DEINIT	= 0,
@@ -818,9 +818,9 @@ struct aq_softc;
 struct aq_firmware_ops {
 	int (*reset)(struct aq_softc *);
 	int (*set_mode)(struct aq_softc *, aq_hw_fw_mpi_state_e_t,
-	    aq_fw_link_speed_t, aq_fw_link_fc_t, aq_fw_link_eee_t);
+	    aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
 	int (*get_mode)(struct aq_softc *, aq_hw_fw_mpi_state_e_t *,
-	    aq_fw_link_speed_t *, aq_fw_link_fc_t *, aq_fw_link_eee_t *);
+	    aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
 	int (*get_stats)(struct aq_softc *, aq_hw_stats_s_t *);
 	int (*led_control)(struct aq_softc *, uint32_t);
 };
@@ -851,11 +851,11 @@ struct aq_softc {
 	struct aq_firmware_ops *sc_fw_ops;
 	uint64_t sc_fw_caps;
 	enum aq_media_type sc_media_type;
-	aq_fw_link_speed_t sc_available_rates;
+	aq_link_speed_t sc_available_rates;
 
-	aq_fw_link_speed_t sc_link_rate;
-	aq_fw_link_fc_t sc_link_fc;
-	aq_fw_link_eee_t sc_link_eee;
+	aq_link_speed_t sc_link_rate;
+	aq_link_fc_t sc_link_fc;
+	aq_link_eee_t sc_link_eee;
 
 	uint32_t sc_fw_version;
 #define FW_VERSION_MAJOR(sc)	(((sc)->sc_fw_version >> 24) & 0xff)
@@ -925,8 +925,7 @@ static void aq_stop(struct ifnet *, int);
 static void aq_watchdog(struct ifnet *);
 static int aq_ioctl(struct ifnet *, unsigned long, void *);
 
-static int aq_set_linkmode(struct aq_softc *);
-
+static int aq_set_linkmode(struct aq_softc *, aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
 static int aq_txring_alloc(struct aq_softc *, struct aq_txring *);
 static void aq_txring_free(struct aq_softc *, struct aq_txring *);
 static int aq_rxring_alloc(struct aq_softc *, struct aq_rxring *);
@@ -941,15 +940,15 @@ static int aq_rx_intr(struct aq_rxring *);
 
 static int fw1x_reset(struct aq_softc *);
 static int fw1x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t,
-    aq_fw_link_speed_t, aq_fw_link_fc_t, aq_fw_link_eee_t);
+    aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
 static int fw1x_get_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t *,
-    aq_fw_link_speed_t *, aq_fw_link_fc_t *, aq_fw_link_eee_t *);
+    aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
 static int fw1x_get_stats(struct aq_softc *, aq_hw_stats_s_t *);
 static int fw2x_reset(struct aq_softc *);
 static int fw2x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t,
-    aq_fw_link_speed_t, aq_fw_link_fc_t, aq_fw_link_eee_t);
+    aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
 static int fw2x_get_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t *,
-    aq_fw_link_speed_t *, aq_fw_link_fc_t *, aq_fw_link_eee_t *);
+    aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
 static int fw2x_get_stats(struct aq_softc *, aq_hw_stats_s_t *);
 static int fw2x_led_control(struct aq_softc *, uint32_t);
 
@@ -977,7 +976,7 @@ static const struct aq_product {
 	pci_product_id_t aq_product;
 	const char *aq_name;
 	enum aq_media_type aq_media_type;
-	aq_fw_link_speed_t aq_available_rates;
+	aq_link_speed_t aq_available_rates;
 } aq_products[] = {
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC107,
 	  "Aquantia AQC107 10 Gigabit Ethernet Adapter",
@@ -1096,39 +1095,6 @@ wait_init_mac_firmware(struct aq_softc *sc)
 	return error;
 }
 
-static int
-aq_get_linkmode(struct aq_softc *sc, aq_fw_link_speed_t *speed, aq_fw_link_fc_t *fc, aq_fw_link_eee_t *eee)
-{
-	aq_hw_fw_mpi_state_e_t mode;
-	aq_fw_link_speed_t cur_speed;
-	aq_fw_link_fc_t cur_fc;
-	aq_fw_link_eee_t cur_eee;
-	int error = 0;
-
-	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_mode != NULL) {
-		error = sc->sc_fw_ops->get_mode(sc,
-		    &mode, &cur_speed, &cur_fc, &cur_eee);
-	} else {
-		aprint_error_dev(sc->sc_dev, "get_mode() not supported by F/W\n");
-		return ENOTSUP;
-	}
-	if (error != 0) {
-		aprint_error_dev(sc->sc_dev, "get_mode() failed, error %d\n", error);
-		return error;
-	}
-	if (mode != MPI_INIT)
-		return -1;
-
-	if (speed != NULL)
-		*speed = cur_speed;
-	if (fc != NULL)
-		*fc = cur_fc;
-	if (eee != NULL)
-		*eee = cur_eee;
-
-	return 0;
-}
-
 /* read my mac address */
 static int
 aq_get_mac_addr(struct aq_softc *sc)
@@ -1220,15 +1186,14 @@ aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
 	return 0;
 }
 
-
 static void
 aq_mediastatus_update(struct aq_softc *sc)
 {
 	sc->sc_media_active = 0;
 
-	if (sc->sc_link_fc & AQ_FW_FC_ENABLE_RX)
+	if (sc->sc_link_fc & AQ_FC_RX)
 		sc->sc_media_active |= IFM_ETH_RXPAUSE;
-	if (sc->sc_link_fc & AQ_FW_FC_ENABLE_TX)
+	if (sc->sc_link_fc & AQ_FC_TX)
 		sc->sc_media_active |= IFM_ETH_TXPAUSE;
 
 	switch (sc->sc_link_rate) {
@@ -1271,31 +1236,34 @@ static int
 aq_mediachange(struct ifnet *ifp)
 {
 	struct aq_softc *sc = ifp->if_softc;
+	aq_link_speed_t rate = AQ_LINK_NONE;
+	aq_link_fc_t fc = AQ_FC_NONE;
+	aq_link_eee_t eee = AQ_EEE_DISABLE;
 
 	if (IFM_TYPE(sc->sc_media.ifm_media) != IFM_ETHER)
 		return EINVAL;
 
 	switch (IFM_SUBTYPE(sc->sc_media.ifm_media)) {
 	case IFM_AUTO:
-		sc->sc_link_rate = AQ_LINK_AUTO;
+		rate = AQ_LINK_AUTO;
 		break;
 	case IFM_NONE:
-		sc->sc_link_rate = AQ_LINK_NONE;
+		rate = AQ_LINK_NONE;
 		break;
 	case IFM_100_TX:
-		sc->sc_link_rate = AQ_LINK_100M;
+		rate = AQ_LINK_100M;
 		break;
 	case IFM_1000_T:
-		sc->sc_link_rate = AQ_LINK_1G;
+		rate = AQ_LINK_1G;
 		break;
 	case IFM_2500_T:
-		sc->sc_link_rate = AQ_LINK_2G5;
+		rate = AQ_LINK_2G5;
 		break;
 	case IFM_5000_T:
-		sc->sc_link_rate = AQ_LINK_5G;
+		rate = AQ_LINK_5G;
 		break;
 	case IFM_10G_T:
-		sc->sc_link_rate = AQ_LINK_10G;
+		rate = AQ_LINK_10G;
 		break;
 	default:
 		aprint_error_dev(sc->sc_dev, "unknown media: 0x%X\n", IFM_SUBTYPE(sc->sc_media.ifm_media));
@@ -1303,12 +1271,12 @@ aq_mediachange(struct ifnet *ifp)
 	}
 
 	if (sc->sc_media.ifm_media & IFM_FLOW)
-		sc->sc_link_fc = AQ_FW_FC_ENABLE_ALL;
-	else
-		sc->sc_link_fc = AQ_FW_FC_NONE;
+		fc = AQ_FC_ALL;
+
+	/* XXX: todo EEE */
 
 	/* re-initialize hardware with new parameters */
-	aq_set_linkmode(sc);
+	aq_set_linkmode(sc, rate, fc, eee);
 
 	return 0;
 }
@@ -1346,12 +1314,8 @@ aq_initmedia(struct aq_softc *sc)
 	/* default media */
 #if 0
 	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO | IFM_FLOW);
-	sc->sc_link_rate = AQ_LINK_AUTO;
-	sc->sc_link_fc = AQ_FW_FC_ENABLE_ALL;
 #else
 	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO);
-	sc->sc_link_rate = AQ_LINK_AUTO;
-	sc->sc_link_fc = AQ_FW_FC_NONE;
 #endif
 }
 
@@ -1670,21 +1634,6 @@ aq_hw_init_ucp(struct aq_softc *sc)
 }
 
 static int
-aq_set_linkmode(struct aq_softc *sc)
-{
-	int error;
-
-	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->set_mode != NULL) {
-		error = sc->sc_fw_ops->set_mode(sc, MPI_INIT,
-		    sc->sc_link_rate, sc->sc_link_fc, sc->sc_link_eee);
-	} else {
-		aprint_error_dev(sc->sc_dev, "set_mode() not supported by F/W\n");
-		error = ENOTSUP;
-	}
-	return error;
-}
-
-static int
 aq_hw_chip_features_init(struct aq_softc *sc)
 {
 	int error = 0;
@@ -1786,8 +1735,45 @@ fw1x_reset(struct aq_softc *sc)
 }
 
 static int
+aq_set_linkmode(struct aq_softc *sc, aq_link_speed_t speed, aq_link_fc_t fc, aq_link_eee_t eee)
+{
+	int error;
+
+	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->set_mode != NULL) {
+		error = sc->sc_fw_ops->set_mode(sc, MPI_INIT, speed, fc, eee);
+	} else {
+		aprint_error_dev(sc->sc_dev, "set_mode() not supported by F/W\n");
+		error = ENOTSUP;
+	}
+	return error;
+}
+
+static int
+aq_get_linkmode(struct aq_softc *sc, aq_link_speed_t *speed, aq_link_fc_t *fc, aq_link_eee_t *eee)
+{
+	aq_hw_fw_mpi_state_e_t mode;
+	int error = 0;
+
+	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_mode != NULL) {
+		error = sc->sc_fw_ops->get_mode(sc,
+		    &mode, speed, fc, eee);
+	} else {
+		aprint_error_dev(sc->sc_dev, "get_mode() not supported by F/W\n");
+		return ENOTSUP;
+	}
+	if (error != 0) {
+		aprint_error_dev(sc->sc_dev, "get_mode() failed, error %d\n", error);
+		return error;
+	}
+	if (mode != MPI_INIT)
+		return ENXIO;
+
+	return 0;
+}
+
+static int
 fw1x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
-    aq_fw_link_speed_t speed, aq_fw_link_fc_t fc, aq_fw_link_eee_t eee)
+    aq_link_speed_t speed, aq_link_fc_t fc, aq_link_eee_t eee)
 {
 	printf("%s:%d: XXX: not implemented\n", __func__, __LINE__);
 	return -1;
@@ -1795,7 +1781,7 @@ fw1x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
 
 static int
 fw1x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *mode,
-    aq_fw_link_speed_t *speed, aq_fw_link_fc_t *fc, aq_fw_link_eee_t *eee)
+    aq_link_speed_t *speed, aq_link_fc_t *fc, aq_link_eee_t *eee)
 {
 	printf("%s:%d: XXX: not implemented\n", __func__, __LINE__);
 	return -1;
@@ -1832,7 +1818,7 @@ fw2x_reset(struct aq_softc *sc)
 }
 
 static uint32_t
-link_speed_mask_to_fw2x(aq_fw_link_speed_t speed)
+link_speed_mask_to_fw2x(aq_link_speed_t speed)
 {
 	uint32_t rate = 0;
 
@@ -1852,7 +1838,7 @@ link_speed_mask_to_fw2x(aq_fw_link_speed_t speed)
 
 static int
 fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
-    aq_fw_link_speed_t speed, aq_fw_link_fc_t fc, aq_fw_link_eee_t eee)
+    aq_link_speed_t speed, aq_link_fc_t fc, aq_link_eee_t eee)
 {
 	uint64_t mpi_ctrl = AQ_READ64_REG(sc, FW2X_MPI_CONTROL_ADDR);
 
@@ -1863,13 +1849,13 @@ fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
 		mpi_ctrl &= ~FW2X_CTRL_LINK_DROP;
 
 		mpi_ctrl &= ~FW2X_CTRL_EEE_MASK;
-		if (sc->sc_link_eee == AQ_FW_EEE_ENABLE)
+		if (eee == AQ_EEE_ENABLE)
 			mpi_ctrl |= FW2X_CTRL_EEE_MASK;
 
 		mpi_ctrl &= ~(FW2X_CTRL_PAUSE | FW2X_CTRL_ASYMMETRIC_PAUSE);
-		if (sc->sc_link_fc & AQ_FW_FC_ENABLE_RX)
+		if (fc & AQ_FC_RX)
 			mpi_ctrl |= FW2X_CTRL_PAUSE;
-		if (sc->sc_link_fc & AQ_FW_FC_ENABLE_TX)
+		if (fc & AQ_FC_TX)
 			mpi_ctrl |= FW2X_CTRL_ASYMMETRIC_PAUSE;
 		break;
 	case MPI_DEINIT:
@@ -1888,7 +1874,7 @@ fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
 
 static int
 fw2x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *mode,
-    aq_fw_link_speed_t *speedp, aq_fw_link_fc_t *fcp, aq_fw_link_eee_t *eeep)
+    aq_link_speed_t *speedp, aq_link_fc_t *fcp, aq_link_eee_t *eeep)
 {
 	uint64_t mpi_state = AQ_READ64_REG(sc, FW2X_MPI_STATE_ADDR);
 
@@ -1900,7 +1886,7 @@ fw2x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *mode,
 			*mode = MPI_DEINIT;
 	}
 
-	aq_fw_link_speed_t speed = AQ_LINK_NONE;
+	aq_link_speed_t speed = AQ_LINK_NONE;
 	if (mpi_state & FW2X_CTRL_RATE_10G)
 		speed = AQ_LINK_10G;
 	else if (mpi_state & FW2X_CTRL_RATE_5G)
@@ -1915,11 +1901,11 @@ fw2x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *mode,
 	if (speedp != NULL)
 		*speedp = speed;
 
-	aq_fw_link_fc_t fc = AQ_FW_FC_NONE;
+	aq_link_fc_t fc = AQ_FC_NONE;
 	if (mpi_state & FW2X_CTRL_PAUSE)
-		fc |= AQ_FW_FC_ENABLE_RX;
+		fc |= AQ_FC_RX;
 	if (mpi_state & FW2X_CTRL_ASYMMETRIC_PAUSE)
-		fc |= AQ_FW_FC_ENABLE_TX;
+		fc |= AQ_FC_TX;
 	if (fcp != NULL)
 		*fcp = fc;
 
@@ -2311,7 +2297,7 @@ aq_hw_init(struct aq_softc *sc)
 	aq_hw_interrupt_moderation_set(sc);
 
 	aq_set_mac_addr(sc, AQ_HW_MAC, sc->sc_enaddr.ether_addr_octet);
-	aq_set_linkmode(sc);
+	aq_set_linkmode(sc, AQ_LINK_NONE, AQ_FC_NONE, AQ_EEE_DISABLE);
 
 	aq_hw_qos_set(sc);
 
@@ -2343,9 +2329,9 @@ aq_hw_init(struct aq_softc *sc)
 static int
 aq_if_update_admin_status(struct aq_softc *sc)
 {
-	aq_fw_link_speed_t rate = AQ_LINK_NONE;
-	aq_fw_link_fc_t fc = AQ_FW_FC_NONE;
-	aq_fw_link_eee_t eee = AQ_FW_EEE_NONE;
+	aq_link_speed_t rate = AQ_LINK_NONE;
+	aq_link_fc_t fc = AQ_FC_NONE;
+	aq_link_eee_t eee = AQ_EEE_DISABLE;
 	unsigned int speed;
 	int changed = 0;
 
@@ -2396,7 +2382,7 @@ aq_if_update_admin_status(struct aq_softc *sc)
 		sc->sc_link_eee = eee;
 
 		/* turn on/off RX Pause in RPB */
-		AQ_WRITE_REG_BIT(sc, RPB_RXB_XOFF_ADR(0), RPB_RXB_XOFF_EN, (fc != AQ_FW_FC_NONE) ? 1 : 0);
+		AQ_WRITE_REG_BIT(sc, RPB_RXB_XOFF_ADR(0), RPB_RXB_XOFF_EN, (fc != AQ_FC_NONE) ? 1 : 0);
 
 		aq_mediastatus_update(sc);
 
@@ -3003,10 +2989,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 	sc->sc_media_type = aqp->aq_media_type;
 	sc->sc_available_rates = aqp->aq_available_rates;
 
-	sc->sc_link_rate = AQ_LINK_AUTO;
-	sc->sc_link_fc = AQ_FW_FC_ENABLE_ALL;
-	sc->sc_link_eee = AQ_FW_EEE_NONE;
-
 	sc->sc_ethercom.ec_ifmedia = &sc->sc_media;
 	ifmedia_init(&sc->sc_media, IFM_IMASK,
 	    aq_ifmedia_change, aq_ifmedia_status);
@@ -3037,7 +3019,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 	aq_enable_intr(sc, true, false);
 
 	/* media update */
-	aq_set_linkmode(sc);
+	aq_mediachange(ifp);
+	aq_set_linkmode(sc, AQ_LINK_AUTO, AQ_FC_ALL, AQ_EEE_DISABLE);
 
 	/* get starting statistics values */
 	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_stats != NULL &&
