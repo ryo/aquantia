@@ -1,4 +1,9 @@
 //
+// PROBLEM
+//	iperfのudpが極端に遅い。落としまくってる?
+//	謎条件で、pingをとりこぼしまくる。
+//
+//
 // TODO
 //	multicast
 //	ioctl
@@ -1160,7 +1165,7 @@ aq_dump_mactable(struct aq_softc *sc)
 }
 #endif
 
-/* set multicast filter, or own address */
+/* set multicast filter. index 0 for own address */
 static int
 aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
 {
@@ -1168,6 +1173,13 @@ aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
 
 	if (index > AQ_HW_MAC_MAX)
 		return EINVAL;
+
+	if (enaddr == NULL) {
+		/* disable */
+		AQ_WRITE_REG_BIT(sc,
+		    RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_EN, 0);
+		return 0;
+	}
 
 	h = (enaddr[0] << 8) |
 	    (enaddr[1]);
@@ -1185,6 +1197,51 @@ aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
 
 	return 0;
 }
+
+static int
+aq_set_filter(struct aq_softc *sc)
+{
+	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	struct ethercom *ec = &sc->sc_ethercom;
+	struct ether_multi *enm;
+	struct ether_multistep step;
+	int idx, error = 0;
+
+	printf("%s:%d\n", __func__, __LINE__);
+
+	if (ifp->if_flags & IFF_PROMISC) {
+		AQ_WRITE_REG_BIT(sc, RPFL2BC_EN_ADR, RPFL2BC_PROMISC_MODE,
+		    (ifp->if_flags & IFF_PROMISC) ? 1 : 0);
+		ec->ec_flags |= ETHER_F_ALLMULTI;
+		goto done;
+	}
+
+	/* clear all table */
+	for (idx = AQ_HW_MAC_MIN; idx <= AQ_HW_MAC_MAX; idx++)
+		aq_set_mac_addr(sc, idx, NULL);
+
+	idx = AQ_HW_MAC_MIN;
+	ETHER_LOCK(ec);
+	ETHER_FIRST_MULTI(step, ec, enm);
+	while (enm != NULL) {
+		if ((idx > AQ_HW_MAC_MAX) ||
+		    memcmp(enm->enm_addrlo, enm->enm_addrhi, ETHER_ADDR_LEN)) {
+			ec->ec_flags |= ETHER_F_ALLMULTI;
+			ETHER_UNLOCK(ec);
+			printf("XXX: set allmulti\n");
+			goto done;
+		}
+
+		aq_set_mac_addr(sc, idx++, enm->enm_addrlo);
+		ETHER_NEXT_MULTI(step, enm);
+	}
+	ec->ec_flags &= ~ETHER_F_ALLMULTI;
+	ETHER_UNLOCK(ec);
+
+ done:
+	return error;
+}
+
 
 static void
 aq_mediastatus_update(struct aq_softc *sc)
@@ -3073,11 +3130,6 @@ aq_detach(device_t self, int flags __unused)
 	return 0;
 }
 
-static void
-aq_iff(struct aq_softc *sc)
-{
-}
-
 static int
 aq_ifmedia_change(struct ifnet * const ifp)
 {
@@ -3539,21 +3591,19 @@ aq_ifflags_cb(struct ethercom *ec)
 {
 	struct ifnet *ifp = &ec->ec_if;
 	struct aq_softc *sc = ifp->if_softc;
+	int error = 0;
 	unsigned short iffchange;
 
 	//XXX: need lock
 	printf("%s:%d\n", __func__, __LINE__);
 
-
 	iffchange = ifp->if_flags ^ sc->sc_if_flags;
 
-	if ((iffchange & IFF_PROMISC) != 0) {
-		AQ_WRITE_REG_BIT(sc, RPFL2BC_EN_ADR, RPFL2BC_PROMISC_MODE,
-		    (ifp->if_flags & IFF_PROMISC) ? 1 : 0);
-	}
+	if ((iffchange & IFF_PROMISC) != 0)
+		error = aq_set_filter(sc);
 
 	sc->sc_if_flags = ifp->if_flags;
-	return 0;
+	return error;
 }
 
 
@@ -3749,28 +3799,22 @@ aq_ioctl(struct ifnet *ifp, unsigned long cmd, void *data)
 	ifr = (struct ifreq *)data;
 	error = 0;
 
-	//XXX: need lock
+	//XXX: need mutex lock
 	s = splnet();
-	switch (cmd) {
-	case SIOCADDMULTI:
-	case SIOCDELMULTI:
-		//XXX
-		printf("%s:%d: XXX: cmd=%08lx(SIOCADDMULTI/SIOCDELMULTI)\n", __func__, __LINE__, cmd);
-		error = 0;
-		break;
-	default:
-		error = ether_ioctl(ifp, cmd, data);
-		break;
-	}
-	if (error == ENETRESET) {
-		if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) ==
-		    (IFF_UP | IFF_RUNNING))
-			aq_iff(sc);
-		error = 0;
-	}
-
+	error = ether_ioctl(ifp, cmd, data);
 	splx(s);
-	// XXX: unlock
+
+	if (error == ENETRESET) {
+		error = 0;
+		if ((cmd == SIOCADDMULTI || cmd == SIOCDELMULTI) &&
+		    (ifp->if_flags & IFF_RUNNING)) {
+			/*
+			 * Multicast list has changed; set the hardware filter
+			 * accordingly.
+			 */
+			error = aq_set_filter(sc);
+		}
+	}
 
 	return error;
 }
