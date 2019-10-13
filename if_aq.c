@@ -5,8 +5,7 @@
 //
 //
 // TODO
-//	multicast
-//	ioctl
+//	allmulti
 //	lock
 //	hardware offloading
 //	tuning
