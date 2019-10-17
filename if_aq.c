@@ -791,6 +791,7 @@ typedef struct aq_tx_desc {
 
 struct aq_txring {
 	struct aq_softc *ring_sc;
+	kmutex_t ring_mutex;
 	int ring_index;
 
 	aq_tx_desc_t *ring_txdesc;	/* aq_tx_desc_t[AQ_TXD_NUM] */
@@ -809,6 +810,7 @@ struct aq_txring {
 
 struct aq_rxring {
 	struct aq_softc *ring_sc;
+	kmutex_t ring_mutex;
 	int ring_index;
 
 	aq_rx_desc_t *ring_rxdesc;	/* aq_rx_desc_t[AQ_RXD_NUM] */
@@ -933,7 +935,6 @@ static void aq_stop(struct ifnet *, int);
 static void aq_watchdog(struct ifnet *);
 static int aq_ioctl(struct ifnet *, unsigned long, void *);
 
-static int aq_set_linkmode(struct aq_softc *, aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
 static int aq_txring_alloc(struct aq_softc *, struct aq_txring *);
 static void aq_txring_free(struct aq_softc *, struct aq_txring *);
 static int aq_rxring_alloc(struct aq_softc *, struct aq_rxring *);
@@ -946,12 +947,16 @@ static int aq_rx_intr_poll(struct aq_rxring *);
 static int aq_tx_intr(struct aq_txring *);
 static int aq_rx_intr(struct aq_rxring *);
 
+static int aq_set_linkmode(struct aq_softc *, aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
+static int aq_get_linkmode(struct aq_softc *, aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
+
 static int fw1x_reset(struct aq_softc *);
 static int fw1x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t,
     aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
 static int fw1x_get_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t *,
     aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
 static int fw1x_get_stats(struct aq_softc *, aq_hw_stats_s_t *);
+
 static int fw2x_reset(struct aq_softc *);
 static int fw2x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t,
     aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
@@ -2780,6 +2785,7 @@ aq_txrx_rings_alloc(struct aq_softc *sc)
 	for (n = 0; n < sc->sc_txringnum; n++) {
 		sc->sc_txring[n].ring_sc = sc;
 		sc->sc_txring[n].ring_index = n;
+		mutex_init(&sc->sc_txring[n].ring_mutex, MUTEX_DEFAULT, IPL_NET);
 		error = aq_txring_alloc(sc, &sc->sc_txring[n]);
 		if (error != 0)
 			goto failure;
@@ -2788,6 +2794,7 @@ aq_txrx_rings_alloc(struct aq_softc *sc)
 	for (n = 0; n < sc->sc_rxringnum; n++) {
 		sc->sc_rxring[n].ring_sc = sc;
 		sc->sc_rxring[n].ring_index = n;
+		mutex_init(&sc->sc_rxring[n].ring_mutex, MUTEX_DEFAULT, IPL_NET);
 		error = aq_rxring_alloc(sc, &sc->sc_rxring[n]);
 		if (error != 0)
 			break;
@@ -2805,6 +2812,8 @@ dump_txrings(struct aq_softc *sc)
 
 	for (n = 0; n < sc->sc_txringnum; n++) {
 		txring = &sc->sc_txring[n];
+		mutex_enter(&txring->ring_mutex);
+
 
 		printf("# txring=%p (index=%d)\n", txring, txring->ring_index);
 		printf("txring->ring_txdesc        = %p\n", txring->ring_txdesc);
@@ -2822,6 +2831,8 @@ dump_txrings(struct aq_softc *sc)
 			    (txring->ring_txdesc[i].ctl & AQ_TXDESC_CTL_CMD_WB) ? " WB" : "");
 			printf("txring->ring_txdesc[%d].ctl2 = %08x\n", i, txring->ring_txdesc[i].ctl2);
 		}
+
+		mutex_exit(&txring->ring_mutex);
 	}
 }
 
@@ -2833,6 +2844,7 @@ dump_rxrings(struct aq_softc *sc)
 
 	for (n = 0; n < sc->sc_rxringnum; n++) {
 		rxring = &sc->sc_rxring[n];
+		mutex_enter(&rxring->ring_mutex);
 
 		printf("# rxring=%p (index=%d)\n", rxring, rxring->ring_index);
 		printf("rxring->ring_rxdesc        = %p\n", rxring->ring_rxdesc);
@@ -2842,6 +2854,8 @@ dump_rxrings(struct aq_softc *sc)
 			printf("rxring->ring_mbufs[%d].m      = %p\n", i, rxring->ring_mbufs[i].m);
 			printf("rxring->ring_mbufs[%d].dmamap = %p\n", i, rxring->ring_mbufs[i].dmamap);
 		}
+
+		mutex_exit(&rxring->ring_mutex);
 	}
 }
 
@@ -2850,11 +2864,15 @@ aq_txrx_rings_free(struct aq_softc *sc)
 {
 	int n;
 
-	for (n = 0; n < sc->sc_txringnum; n++)
+	for (n = 0; n < sc->sc_txringnum; n++) {
 		aq_txring_free(sc, &sc->sc_txring[n]);
+		mutex_destroy(&sc->sc_txring[n].ring_mutex);
+	}
 
-	for (n = 0; n < sc->sc_rxringnum; n++)
+	for (n = 0; n < sc->sc_rxringnum; n++) {
 		aq_rxring_free(sc, &sc->sc_rxring[n]);
+		mutex_destroy(&sc->sc_rxring[n].ring_mutex);
+	}
 }
 
 #ifdef USE_CALLOUT_TICK
@@ -2888,7 +2906,9 @@ aq_intr(void *arg)
 
 	for (i = 0; i < sc->sc_rxringnum; i++) {
 		if (status & __BIT(i)) {
+			mutex_enter(&sc->sc_rxring[i].ring_mutex);
 			handled += aq_rx_intr(&sc->sc_rxring[i]);
+			mutex_exit(&sc->sc_rxring[i].ring_mutex);
 		}
 #ifdef XXX_INTR_DEBUG
 		else if (aq_rx_intr_poll(&sc->sc_rxring[i]) != 0) {
@@ -2898,7 +2918,9 @@ aq_intr(void *arg)
 	}
 	for (i = 0; i < sc->sc_txringnum; i++) {
 		if (status & __BIT(i)) {
+			mutex_enter(&sc->sc_txring[i].ring_mutex);
 			handled += aq_tx_intr(&sc->sc_txring[i]);
+			mutex_exit(&sc->sc_txring[i].ring_mutex);
 		}
 #ifdef XXX_INTR_DEBUG
 		else if (aq_tx_intr_poll(&sc->sc_txring[i]) != 0) {
@@ -3163,7 +3185,7 @@ aq_ifmedia_status(struct ifnet * const ifp, struct ifmediareq *req)
 }
 
 static void
-aq_txring_init(struct aq_softc *sc, struct aq_txring *txring, bool enable_dma)
+aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 {
 	const int ringidx = txring->ring_index;
 	int i;
@@ -3183,7 +3205,7 @@ aq_txring_init(struct aq_softc *sc, struct aq_txring *txring, bool enable_dma)
 	/* disable DMA once */
 	AQ_WRITE_REG_BIT(sc, TX_DMA_DESC_LEN_ADR(ringidx), TX_DMA_DESC_ENABLE, 0);
 
-	if (enable_dma) {
+	if (start) {
 		/* TX descriptor physical address */
 		paddr_t paddr = txring->ring_txdesc_dmamap->dm_segs[0].ds_addr;
 		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRLSW_ADR(ringidx), paddr);
@@ -3220,7 +3242,7 @@ aq_txring_start(struct aq_softc *sc, struct aq_txring *txring)
 }
 
 static int
-aq_rxring_init(struct aq_softc *sc, struct aq_rxring *rxring, bool enable_dma)
+aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 {
 	const int ringidx = rxring->ring_index;
 	int i;
@@ -3234,7 +3256,7 @@ aq_rxring_init(struct aq_softc *sc, struct aq_rxring *rxring, bool enable_dma)
 	/* free all RX mbufs */
 	aq_rxdrain(sc, rxring);
 
-	if (enable_dma) {
+	if (start) {
 		for (i = 0; i < AQ_RXD_NUM; i++) {
 			error = aq_rxring_add(sc, rxring, i);
 			if (error != 0) {
@@ -3635,13 +3657,13 @@ aq_init(struct ifnet *ifp)
 
 	/* start TX */
 	for (i = 0; i < sc->sc_txringnum; i++) {
-		aq_txring_init(sc, &sc->sc_txring[i], true);
+		aq_txring_reset(sc, &sc->sc_txring[i], true);
 	}
 	AQ_WRITE_REG_BIT(sc, TPB_TX_BUF_ADR, TPB_TX_BUF_EN, 1);
 
 	/* start RX */
 	for (i = 0; i < sc->sc_rxringnum; i++) {
-		error = aq_rxring_init(sc, &sc->sc_rxring[i], true);
+		error = aq_rxring_reset(sc, &sc->sc_rxring[i], true);
 		if (error != 0)
 			goto aq_init_failure;
 	}
@@ -3688,7 +3710,7 @@ aq_start(struct ifnet *ifp)
 
 	sc = ifp->if_softc;
 
-	txring = &sc->sc_txring[0];	// select TX ring
+	txring = &sc->sc_txring[0];	// XXX: select TX ring
 
 #if 0
 	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u, INTR_MASK/INTR_STATUS=%08x/%08x\n",
@@ -3697,6 +3719,8 @@ aq_start(struct ifnet *ifp)
 	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_ADR(txring->ring_index)),
 	    AQ_READ_REG(sc, AQ_INTR_MASK), AQ_READ_REG(sc, AQ_INTR_STATUS));
 #endif
+
+	mutex_enter(&txring->ring_mutex);
 
 	for (npkt = 0; ; npkt++) {
 		IFQ_POLL(&ifp->if_snd, m);
@@ -3728,6 +3752,8 @@ aq_start(struct ifnet *ifp)
 		bpf_mtap(ifp, m, BPF_D_OUT);
 	}
 
+	mutex_exit(&txring->ring_mutex);
+
 	if (npkt)
 		ifp->if_timer = 5;
 
@@ -3747,10 +3773,10 @@ aq_stop(struct ifnet *ifp, int disable)
 	aq_enable_intr(sc, false, false);
 
 	for (i = 0; i < sc->sc_txringnum; i++) {
-		aq_txring_init(sc, &sc->sc_txring[i], false);
+		aq_txring_reset(sc, &sc->sc_txring[i], false);
 	}
 	for (i = 0; i < sc->sc_rxringnum; i++) {
-		aq_rxring_init(sc, &sc->sc_rxring[i], false);
+		aq_rxring_reset(sc, &sc->sc_rxring[i], false);
 	}
 	//toggle cache
 	AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_CACHE_INIT_ADR, RX_DMA_DESC_CACHE_INIT_MSK,
