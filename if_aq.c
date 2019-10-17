@@ -176,17 +176,17 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define HW_ATL_UCP_0X370_REG			FW2X_MPI_STATE_ADDR
 #define HW_ATL_FW1X_MPI_EFUSE_ADDR		0x0374
 #define HW_ATL_MPI_BOOT_EXIT_CODE		0x0388
-#define   RBL_STATUS_DEAD				0xdead
-#define   RBL_STATUS_SUCCESS				0xabba
-#define   RBL_STATUS_FAILURE				0x0bad
-#define   RBL_STATUS_HOST_BOOT				0xf1a7
+#define   RBL_STATUS_DEAD				0x0000dead
+#define   RBL_STATUS_SUCCESS				0x0000abba
+#define   RBL_STATUS_FAILURE				0x00000bad
+#define   RBL_STATUS_HOST_BOOT				0x0000f1a7
 
 //#define GLB_CPU_NO_RESET_SCRATCHPAD_ADR(i)	(0x0380 + (i) * 0x4)
 //#define  NO_RESET_SCRATCHPAD_RBL_STATUS		2	// = 0x0388 = HW_ATL_MPI_BOOT_EXIT_CODE
-//#define   NO_RESET_SCRATCHPAD_RBL_STATUS_MAGIC_DEAD	0xdead
-//#define   RBL_STATUS_SUCCESS				0xabba
-//#define   RBL_STATUS_FAILURE				0x0bad
-//#define   RBL_STATUS_HOST_BOOT				0xf1a7
+//#define   NO_RESET_SCRATCHPAD_RBL_STATUS_MAGIC_DEAD	0x0000dead
+//#define   RBL_STATUS_SUCCESS				0x0000abba
+//#define   RBL_STATUS_FAILURE				0x00000bad
+//#define   RBL_STATUS_HOST_BOOT				0x0000f1a7
 
 #define HW_ATL_GLB_CPU_SEM_ADR(i)		(0x03a0 + (i) * 0x4)
 #define  HW_ATL_FW_SM_RAM			2	// = 0x03a8
