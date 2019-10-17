@@ -13,6 +13,7 @@
 //	interrupt moderation
 //	msix
 //	vlan
+//	counters, evcnt
 //	cleanup source
 //	fw1x (revision A0)
 //
@@ -145,13 +146,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define HW_ATL_RSS_INDIRECTION_TABLE_MAX	64
 
 
-#define GLB_STANDARD_CTL1_ADR			0x0000
-#define GLB_SOFT_RES_ADR			GLB_STANDARD_CTL1_ADR
-#define  GLB_SOFT_RES_MSK			__BIT(15) /* soft reset bit */
-#define GLB_REG_RES_DIS_ADR			GLB_STANDARD_CTL1_ADR
-#define  GLB_REG_RES_DIS_MSK			__BIT(14) /* reset disable */
+#define AQ_SOFTRESET_REG			0x0000
+#define  AQ_SOFTRESET_RESET			__BIT(15) /* soft reset bit */
+#define  AQ_SOFTRESET_DISABLE			__BIT(14) /* reset disable */
 
-#define HW_ATL_GLB_SOFT_RES_ADR			0x0000
 #define HW_ATL_MPI_FW_VERSION			0x0018
 #define  FW2X_FW_MIN_VER_LED			0x03010026
 #define GLB_FW_IMAGE_ID1_ADR			0x0018
@@ -1406,10 +1404,10 @@ global_software_reset(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, TX_SYSCONTROL_ADR, TX_REG_RESET_DIS, 0);
 	AQ_WRITE_REG_BIT(sc, MPI_RESETCTRL_ADR, MPI_RESETCTRL_RESET_DIS, 0);
 
-	v = AQ_READ_REG(sc, GLB_STANDARD_CTL1_ADR);
-	v &= ~GLB_REG_RES_DIS_MSK;
-	v |= GLB_SOFT_RES_MSK;
-	AQ_WRITE_REG(sc, GLB_STANDARD_CTL1_ADR, v);
+	v = AQ_READ_REG(sc, AQ_SOFTRESET_REG);
+	v &= ~AQ_SOFTRESET_DISABLE;
+	v |= AQ_SOFTRESET_RESET;
+	AQ_WRITE_REG(sc, AQ_SOFTRESET_REG, v);
 }
 
 static int
@@ -1491,10 +1489,10 @@ mac_soft_reset_flb(struct aq_softc *sc)
 	AQ_WRITE_REG(sc, GLB_NVR_INTERFACE1_ADR, 0x809f);
 	msec_delay(50);
 
-	v = AQ_READ_REG(sc, GLB_STANDARD_CTL1_ADR);
-	v &= ~GLB_REG_RES_DIS_MSK;
-	v |= GLB_SOFT_RES_MSK;
-	AQ_WRITE_REG(sc, GLB_STANDARD_CTL1_ADR, v);
+	v = AQ_READ_REG(sc, AQ_SOFTRESET_REG);
+	v &= ~AQ_SOFTRESET_DISABLE;
+	v |= AQ_SOFTRESET_RESET;
+	AQ_WRITE_REG(sc, AQ_SOFTRESET_REG, v);
 
 	/* Kickstart. */
 	AQ_WRITE_REG(sc, GLB_CTL2_ADR, 0x80e0);
