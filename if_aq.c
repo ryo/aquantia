@@ -16,6 +16,7 @@
 //	vlan
 //	counters, evcnt
 //	cleanup source
+//	fulldup control? (100baseTX)
 //	fw1x (revision A0)
 //
 
@@ -1390,9 +1391,13 @@ aq_initmedia(struct aq_softc *sc)
 
 	/* default media */
 #if 0
+	/* default: auto with flowcontrol */
 	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO | IFM_FLOW);
+	aq_set_linkmode(sc, AQ_LINK_AUTO, AQ_FC_ALL, AQ_EEE_DISABLE);
 #else
+	/* default: auto without flowcontrol */
 	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO);
+	aq_set_linkmode(sc, AQ_LINK_AUTO, AQ_FC_NONE, AQ_EEE_DISABLE);
 #endif
 }
 
@@ -2392,8 +2397,9 @@ aq_hw_init(struct aq_softc *sc)
 }
 
 static int
-aq_if_update_admin_status(struct aq_softc *sc)
+aq_update_link_status(struct aq_softc *sc)
 {
+	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
 	aq_link_speed_t rate = AQ_LINK_NONE;
 	aq_link_fc_t fc = AQ_FC_NONE;
 	aq_link_eee_t eee = AQ_EEE_DISABLE;
@@ -2434,12 +2440,14 @@ aq_if_update_admin_status(struct aq_softc *sc)
 
 		if (sc->sc_link_rate == AQ_LINK_NONE) {
 			/* link DOWN -> UP */
-			device_printf(sc->sc_dev, "link UP: speed=%u\n", speed);
+			device_printf(sc->sc_dev, "link is UP: speed=%u\n", speed);
+			if_link_state_change(ifp, LINK_STATE_UP);
 		} else if (rate == AQ_LINK_NONE) {
 			/* link UP -> DOWN */
-			device_printf(sc->sc_dev, "link DOWN\n");
+			device_printf(sc->sc_dev, "link is DOWN\n");
+			if_link_state_change(ifp, LINK_STATE_DOWN);
 		} else {
-			device_printf(sc->sc_dev, "link changed: speed=%u, fc=0x%x, eee=%x\n", speed, fc, eee);
+			device_printf(sc->sc_dev, "link mode changed: speed=%u, fc=0x%x, eee=%x\n", speed, fc, eee);
 		}
 
 		sc->sc_link_rate = rate;
@@ -2869,7 +2877,7 @@ aq_tick(void *arg)
 {
 	struct aq_softc *sc = arg;
 
-	aq_if_update_admin_status(sc);
+	aq_update_link_status(sc);
 
 	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
 }
@@ -2889,7 +2897,7 @@ aq_intr(void *arg)
 #endif
 
 	if (status & __BIT(LINKUP_IRQ)) {
-		handled += aq_if_update_admin_status(sc);
+		handled += aq_update_link_status(sc);
 	}
 
 	for (i = 0; i < sc->sc_rxringnum; i++) {
@@ -3102,7 +3110,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 
 	/* media update */
 	aq_mediachange(ifp);
-	aq_set_linkmode(sc, AQ_LINK_AUTO, AQ_FC_ALL, AQ_EEE_DISABLE);
 
 	/* get starting statistics values */
 	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_stats != NULL &&
