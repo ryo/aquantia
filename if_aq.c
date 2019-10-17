@@ -8,9 +8,10 @@
 //	rss (+取りこぼし問題?)
 //	lock
 //	hardware offloading
+//	cleanup debug printf
 //	tuning
-//	IP header offset 4n+2問題
 //	interrupt moderation
+//	IP header offset 4n+2問題
 //	msix
 //	vlan
 //	counters, evcnt
@@ -1056,7 +1057,7 @@ aq_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
 		AQ_WRITE_REG(sc, HW_ATL_GLB_CPU_SEM_ADR(HW_ATL_FW_SM_RAM), 1);
 		v = AQ_READ_REG(sc, HW_ATL_GLB_CPU_SEM_ADR(HW_ATL_FW_SM_RAM));
 		if (v == 0) {
-			aprint_debug_dev(sc->sc_dev,
+			device_printf(sc->sc_dev,
 			    "%s:%d: timeout\n", __func__, __LINE__);
 			return ETIMEDOUT;
 		}
@@ -1084,7 +1085,7 @@ aq_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
 	AQ_WRITE_REG(sc, HW_ATL_GLB_CPU_SEM_ADR(HW_ATL_FW_SM_RAM), 1);
 
 	if (error != 0)
-		aprint_debug_dev(sc->sc_dev,
+		device_printf(sc->sc_dev,
 		    "%s:%d: timeout\n", __func__, __LINE__);
 
 	return error;
@@ -1342,8 +1343,8 @@ aq_mediachange(struct ifnet *ifp)
 		rate = AQ_LINK_10G;
 		break;
 	default:
-		aprint_error_dev(sc->sc_dev, "unknown media: 0x%X\n", IFM_SUBTYPE(sc->sc_media.ifm_media));
-		return 0;
+		device_printf(sc->sc_dev, "unknown media: 0x%X\n", IFM_SUBTYPE(sc->sc_media.ifm_media));
+		return ENODEV;
 	}
 
 	if (sc->sc_media.ifm_media & IFM_FLOW)
@@ -1818,7 +1819,7 @@ aq_set_linkmode(struct aq_softc *sc, aq_link_speed_t speed, aq_link_fc_t fc, aq_
 	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->set_mode != NULL) {
 		error = sc->sc_fw_ops->set_mode(sc, MPI_INIT, speed, fc, eee);
 	} else {
-		aprint_error_dev(sc->sc_dev, "set_mode() not supported by F/W\n");
+		device_printf(sc->sc_dev, "%s: not supported by F/W\n", __func__);
 		error = ENOTSUP;
 	}
 	return error;
@@ -1834,13 +1835,11 @@ aq_get_linkmode(struct aq_softc *sc, aq_link_speed_t *speed, aq_link_fc_t *fc, a
 		error = sc->sc_fw_ops->get_mode(sc,
 		    &mode, speed, fc, eee);
 	} else {
-		aprint_error_dev(sc->sc_dev, "get_mode() not supported by F/W\n");
+		device_printf(sc->sc_dev, "%s: not supported by F/W\n", __func__);
 		return ENOTSUP;
 	}
-	if (error != 0) {
-		aprint_error_dev(sc->sc_dev, "get_mode() failed, error %d\n", error);
+	if (error != 0)
 		return error;
-	}
 	if (mode != MPI_INIT)
 		return ENXIO;
 
@@ -1893,25 +1892,6 @@ fw2x_reset(struct aq_softc *sc)
 	return 0;
 }
 
-static uint32_t
-link_speed_mask_to_fw2x(aq_link_speed_t speed)
-{
-	uint32_t rate = 0;
-
-	if (speed & AQ_LINK_10G)
-		rate |= FW2X_CTRL_RATE_10G;
-	if (speed & AQ_LINK_5G)
-		rate |= FW2X_CTRL_RATE_5G;
-	if (speed & AQ_LINK_2G5)
-		rate |= FW2X_CTRL_RATE_2G5;
-	if (speed & AQ_LINK_1G)
-		rate |= FW2X_CTRL_RATE_1G;
-	if (speed & AQ_LINK_100M)
-		rate |= FW2X_CTRL_RATE_100M;
-
-	return rate;
-}
-
 static int
 fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
     aq_link_speed_t speed, aq_link_fc_t fc, aq_link_eee_t eee)
@@ -1921,7 +1901,17 @@ fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
 	switch (mode) {
 	case MPI_INIT:
 		mpi_ctrl &= ~FW2X_CTRL_RATE_MASK;
-		mpi_ctrl |= link_speed_mask_to_fw2x(speed);
+		if (speed & AQ_LINK_10G)
+			mpi_ctrl |= FW2X_CTRL_RATE_10G;
+		if (speed & AQ_LINK_5G)
+			mpi_ctrl |= FW2X_CTRL_RATE_5G;
+		if (speed & AQ_LINK_2G5)
+			mpi_ctrl |= FW2X_CTRL_RATE_2G5;
+		if (speed & AQ_LINK_1G)
+			mpi_ctrl |= FW2X_CTRL_RATE_1G;
+		if (speed & AQ_LINK_100M)
+			mpi_ctrl |= FW2X_CTRL_RATE_100M;
+
 		mpi_ctrl &= ~FW2X_CTRL_LINK_DROP;
 
 		mpi_ctrl &= ~FW2X_CTRL_EEE_MASK;
@@ -1939,7 +1929,7 @@ fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
 		mpi_ctrl &= ~(FW2X_CTRL_PAUSE | FW2X_CTRL_ASYMMETRIC_PAUSE);
 		break;
 	default:
-		aprint_error_dev(sc->sc_dev,
+		device_printf(sc->sc_dev,
 		    "fw2x> unknown MPI state %d\n", mode);
 		return EINVAL;
 	}
@@ -2002,7 +1992,7 @@ toggle_mpi_ctrl_and_wait(struct aq_softc *sc, uint64_t mask,
 
 	/* First, check that control and state values are consistent */
 	if ((mpi_ctrl & mask) != (mpi_state & mask)) {
-		aprint_error_dev(sc->sc_dev,
+		device_printf(sc->sc_dev,
 		    "fw2x> MPI control (%#llx) and state (%#llx)"
 		    " are not consistent for mask %#llx!\n",
 		    (unsigned long long)mpi_ctrl, (unsigned long long)mpi_state,
@@ -2021,7 +2011,7 @@ toggle_mpi_ctrl_and_wait(struct aq_softc *sc, uint64_t mask,
 	WAIT_FOR((AQ_READ64_REG(sc, FW2X_MPI_CONTROL_ADDR) & mask) == mpi_ctrl,
 	    1000 * timeout_ms, try_count, &error);
 	if (error != 0) {
-		aprint_debug_dev(sc->sc_dev,
+		device_printf(sc->sc_dev,
 		    "f/w2x> timeout while waiting for response"
 		    " in state register for bit %#llx!",
 		    (unsigned long long)mask);
@@ -2038,7 +2028,7 @@ fw2x_get_stats(struct aq_softc *sc, aq_hw_stats_s_t *stats)
 	/* Say to F/W to update the statistics */
 	error = toggle_mpi_ctrl_and_wait(sc, FW2X_CTRL_STATISTICS, 1, 25);
 	if (error != 0) {
-		aprint_error_dev(sc->sc_dev,
+		device_printf(sc->sc_dev,
 		    "fw2x> statistics update error %d\n", error);
 		return error;
 	}
@@ -2048,7 +2038,7 @@ fw2x_get_stats(struct aq_softc *sc, aq_hw_stats_s_t *stats)
 	    sc->sc_mbox_addr + offsetof(fw2x_mailbox_t, msm),
 	    (uint32_t *)stats, sizeof(fw2x_msm_statistics_t) / sizeof(uint32_t));
 	if (error != 0) {
-		aprint_error_dev(sc->sc_dev,
+		device_printf(sc->sc_dev,
 		    "fw2x> download statistics data FAILED, error %d", error);
 		return error;
 	}
@@ -2444,12 +2434,12 @@ aq_if_update_admin_status(struct aq_softc *sc)
 
 		if (sc->sc_link_rate == AQ_LINK_NONE) {
 			/* link DOWN -> UP */
-			aprint_debug_dev(sc->sc_dev, "link UP: speed=%u\n", speed);
+			device_printf(sc->sc_dev, "link UP: speed=%u\n", speed);
 		} else if (rate == AQ_LINK_NONE) {
 			/* link UP -> DOWN */
-			aprint_debug_dev(sc->sc_dev, "link DOWN\n");
+			device_printf(sc->sc_dev, "link DOWN\n");
 		} else {
-			aprint_debug_dev(sc->sc_dev, "link changed: speed=%u, fc=0x%x, eee=%x\n", speed, fc, eee);
+			device_printf(sc->sc_dev, "link changed: speed=%u, fc=0x%x, eee=%x\n", speed, fc, eee);
 		}
 
 		sc->sc_link_rate = rate;
@@ -2684,7 +2674,7 @@ aq_rxring_add(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
 	error = bus_dmamap_load_mbuf(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap,
 	    m, BUS_DMA_NOWAIT);
 	if (error) {
-		aprint_error_dev(sc->sc_dev,
+		device_printf(sc->sc_dev,
 		    "unable to load rx DMA map %d, error = %d\n", idx, error);
 		panic("%s: unable to load rx DMA map. error=%d", __func__, error);
 	}
