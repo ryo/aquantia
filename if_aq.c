@@ -5,12 +5,12 @@
 //
 //
 // TODO
-//	allmulti
+//	rss (+取りこぼし問題?)
 //	lock
 //	hardware offloading
 //	tuning
+//	IP header offset 4n+2問題
 //	interrupt moderation
-//	rss
 //	msix
 //	vlan
 //	cleanup source
