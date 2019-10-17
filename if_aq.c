@@ -32,6 +32,7 @@
 //	MPI = MAC PHY INTERFACE?
 //	RPO = RX Protocol Offloading?
 //	TPO = TX Protocol Offloading?
+//	RPF = RX Packet Filter
 //
 
 
@@ -259,8 +260,11 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_HW_MAC_MIN			1
 #define AQ_HW_MAC_MAX			33
 
-#define RX_FLR_MCST_FLR_ADR(idx)		(0x5250 + (idx) * 0x4)
-#define RX_FLR_MCST_FLR_MSK_ADR			0x5270
+#define RPF_MCAST_FILTER_REG(i)			(0x5250 + (i) * 0x4)
+#define  RPF_MCAST_FILTER_ENABLE		__BIT(31)
+#define RPF_MCAST_FILTER_MASK_REG		0x5270
+#define  RPF_MCAST_FILTER_MASK_ALLMULTI		__BIT(14)
+
 
 #define RPF_VL_ACCEPT_UNTAGGED_MODE_ADR		0x5280
 #define  RPF_VL_PROMISC_MODE_MSK		__BIT(1)
@@ -1206,8 +1210,6 @@ aq_set_filter(struct aq_softc *sc)
 	struct ether_multistep step;
 	int idx, error = 0;
 
-	printf("%s:%d\n", __func__, __LINE__);
-
 	if (ifp->if_flags & IFF_PROMISC) {
 		AQ_WRITE_REG_BIT(sc, RPFL2BC_EN_ADR, RPFL2BC_PROMISC_MODE,
 		    (ifp->if_flags & IFF_PROMISC) ? 1 : 0);
@@ -1219,19 +1221,34 @@ aq_set_filter(struct aq_softc *sc)
 	for (idx = AQ_HW_MAC_MIN; idx <= AQ_HW_MAC_MAX; idx++)
 		aq_set_mac_addr(sc, idx, NULL);
 
+	/* don't accept all multicast */
+	AQ_WRITE_REG_BIT(sc, RPF_MCAST_FILTER_MASK_REG,
+	    RPF_MCAST_FILTER_MASK_ALLMULTI, 0);
+	AQ_WRITE_REG_BIT(sc, RPF_MCAST_FILTER_REG(0),
+	    RPF_MCAST_FILTER_ENABLE, 0);
+
 	idx = AQ_HW_MAC_MIN;
 	ETHER_LOCK(ec);
 	ETHER_FIRST_MULTI(step, ec, enm);
 	while (enm != NULL) {
 		if ((idx > AQ_HW_MAC_MAX) ||
 		    memcmp(enm->enm_addrlo, enm->enm_addrhi, ETHER_ADDR_LEN)) {
+			/*
+			 * too many filters.
+			 * fallback to accept all multicast addresses.
+			 */
+			AQ_WRITE_REG_BIT(sc, RPF_MCAST_FILTER_MASK_REG,
+			    RPF_MCAST_FILTER_MASK_ALLMULTI, 1);
+			AQ_WRITE_REG_BIT(sc, RPF_MCAST_FILTER_REG(0),
+			    RPF_MCAST_FILTER_ENABLE, 1);
 			ec->ec_flags |= ETHER_F_ALLMULTI;
 			ETHER_UNLOCK(ec);
-			printf("XXX: set allmulti\n");
 			goto done;
 		}
 
+		/* add a filter */
 		aq_set_mac_addr(sc, idx++, enm->enm_addrlo);
+
 		ETHER_NEXT_MULTI(step, enm);
 	}
 	ec->ec_flags &= ~ETHER_F_ALLMULTI;
@@ -2086,14 +2103,13 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 	/* RSS Ring selection */
 	AQ_WRITE_REG(sc, RX_FLR_RSS_CONTROL1_ADR, sc->sc_rss_enable ? 0xb3333333 : 0);
 
-	/* Multicast filters */
+	/* L2 and Multicast filters */
 	for (i = AQ_HW_MAC_MIN; i < AQ_HW_MAC_MAX; i++) {
 		AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(i), RPFL2UC_DAFMSW_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(i), RPFL2UC_DAFMSW_ACTF, 1);
 	}
-
-	AQ_WRITE_REG(sc, RX_FLR_MCST_FLR_MSK_ADR, 0);
-	AQ_WRITE_REG(sc, RX_FLR_MCST_FLR_ADR(0), 0x00010fff);
+	AQ_WRITE_REG(sc, RPF_MCAST_FILTER_MASK_REG, 0);
+	AQ_WRITE_REG(sc, RPF_MCAST_FILTER_REG(0), 0x00010fff);
 
 	/* Vlan filters */
 	AQ_WRITE_REG_BIT(sc, RPF_VL_TPID_ADR, RPF_VL_TPID_OUTER_MSK, ETHERTYPE_QINQ);
