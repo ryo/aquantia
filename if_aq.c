@@ -1,6 +1,11 @@
 //
 // PROBLEM
+//	謎条件で、pingをとりこぼしまくる。attachしてすぐにIP addressを設定すると起きやすい? 初期化問題?
+//		→どうやらaq_update_link_status()でRPB_RXB_XOFF_ENをセットしていたからっぽい? 0固定で良いっぽい。
+//		→まだ起きるっぽい。detach && attach するとなおる(少くともring_num=1,8のとき起きた)
+//
 //	iperfのudpが極端に遅い。落としまくってる? 他のNICでも起きるのでaqの問題ではなさそう。
+//
 //
 // MEMO?
 //	VLANIDで16ヶのringに振り分け可能?
@@ -29,9 +34,6 @@
 //	fulldup control? (100baseTX)
 //	fw1x (revision A0)
 //
-// DONE
-//	謎条件で、pingをとりこぼしまくる。attachしてすぐにIP addressを設定すると起きやすい? 初期化問題?
-//		→どうやらaq_update_link_status()でRPB_RXB_XOFF_ENをセットしていたからっぽい? 0固定で良いっぽい。
 
 //#define XXX_FORCE_32BIT_PA
 //#define XXX_DEBUG_PMAP_EXTRACT
@@ -383,10 +385,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPB_RPF_RX_FC_MODE			__BITS(5,4)
 #define  RPB_RPF_RX_BUF_EN			__BIT(0)
 
-#define RPB_RXBBUF_SIZE_ADR(n)			(0x5710 + (n) * 16)
+#define RPB_RXBBUF_SIZE_ADR(n)			(0x5710 + (n) * 0x10)
 #define  RPB_RXBBUF_SIZE_MSK			__BITS(8,0)
 
-#define RPB_RXB_XOFF_ADR(n)			(0x5714 + (n) * 16)
+#define RPB_RXB_XOFF_ADR(n)			(0x5714 + (n) * 0x10)
 #define  RPB_RXB_XOFF_EN			__BIT(31)
 #define  RPB_RXB_XOFF_THRESH_HI			__BITS(29,16)
 #define  RPB_RXB_XOFF_THRESH_LO			__BITS(13,0)
@@ -402,20 +404,20 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define RX_INTR_MODERATION_CTL_ADR(n)		(0x5a40 + (n) * 4)
 
-#define RX_DMA_DESC_BASE_ADDRLSW_ADR(n)		(0x5b00 + (n) * 32)
-#define RX_DMA_DESC_BASE_ADDRMSW_ADR(n)		(0x5b04 + (n) * 32)
-#define RX_DMA_DESC_LEN_ADR(n)			(0x5b08 + (n) * 32)
+#define RX_DMA_DESC_BASE_ADDRLSW_ADR(n)		(0x5b00 + (n) * 0x20)
+#define RX_DMA_DESC_BASE_ADDRMSW_ADR(n)		(0x5b04 + (n) * 0x20)
+#define RX_DMA_DESC_LEN_ADR(n)			(0x5b08 + (n) * 0x20)
 #define  RX_DMA_DESC_LEN_MSK			__BITS(12,3)	/* RXD_NUM/8 */
 #define  RX_DMA_DESC_RESET			__BIT(25)
 #define  RX_DMA_DESC_HEADER_SPLIT		__BIT(28)
 #define  RX_DMA_DESC_VLAN_STRIP			__BIT(29)
 #define  RX_DMA_DESC_ENABLE			__BIT(31)
 
-#define RX_DMA_DESC_HEAD_PTR_ADR(n)		(0x5b0c + (n) * 32)
+#define RX_DMA_DESC_HEAD_PTR_ADR(n)		(0x5b0c + (n) * 0x20)
 #define  RX_DMA_DESC_HEAD_PTR_MSK		__BITS(12,0)
-#define RX_DMA_DESC_TAIL_PTR_ADR(n)		(0x5b10 + (n) * 32)
+#define RX_DMA_DESC_TAIL_PTR_ADR(n)		(0x5b10 + (n) * 0x20)
 
-#define RX_DMA_DESC_BUFSIZE_ADR(n)		(0x5b18 + (n) * 32)
+#define RX_DMA_DESC_BUFSIZE_ADR(n)		(0x5b18 + (n) * 0x20)
 #define  RX_DMA_DESC_BUFSIZE_DATA_MSK		__BITS(4,0)
 #define  RX_DMA_DESC_BUFSIZE_HDR_MSK		__BITS(12,8)
 
@@ -481,9 +483,9 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TPB_TX_BUF_SCP_INS_EN			__BIT(2)
 #define  TPB_TX_BUF_TC_MODE_EN			__BIT(8)
 
-#define TPB_TXBBUF_SIZE_ADR(buffer)		(0x7910 + (buffer) * 16)
+#define TPB_TXBBUF_SIZE_ADR(buffer)		(0x7910 + (buffer) * 0x10)
 #define  TPB_TXBBUF_SIZE_MSK			__BITS(7,0)
-#define TPB_TXB_THRESH_ADR(buffer)		(0x7914 + (buffer) * 16)
+#define TPB_TXB_THRESH_ADR(buffer)		(0x7914 + (buffer) * 0x10)
 #define  TPB_TXB_THRESH_HI			__BITS(16,28)
 #define  TPB_TXB_THRESH_LO			__BITS(12,0)
 
@@ -807,8 +809,8 @@ typedef struct aq_tx_desc {
 #define AQ_TXD_MAX	8184	/* = 0x1ff8 = 8192 - 8 */
 
 /* configuration for this driver */
-#define AQ_TXRING_NUM	8
-#define AQ_RXRING_NUM	8
+#define AQ_TXRING_NUM	1
+#define AQ_RXRING_NUM	1
 #define AQ_TXD_NUM	2048	/* per ring. must be 8*n */
 #define AQ_RXD_NUM	2048	/* per ring. must be 8*n */
 
@@ -2315,7 +2317,6 @@ aq_hw_offload_set(struct aq_softc *sc)
 	 * we need to multiply by 50(0x32) to get
 	 * the default value 250 uS
 	 */
-
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_MAX_IVAL_ADR, RPO_LRO_MAX_IVAL_MSK, 50);
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_QSES_LMT_ADR, RPO_LRO_QSES_LMT_MSK, 1);
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_TOT_DSC_LMT_ADR, RPO_LRO_TOT_DSC_LMT_MSK, 2);
@@ -2380,6 +2381,7 @@ aq_hw_rss_set(struct aq_softc *sc)
 	}
 
 	for (i = __arraycount(bitary); i--;) {
+		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_ADDR_ADR, RPF_RSS_REDIR_WR_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_WR_DATA_ADR, RPF_RSS_REDIR_WR_DATA_MSK, bitary[i]);
 		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_ADDR_ADR, RPF_RSS_REDIR_ADDR_MSK, i);
 		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_ADDR_ADR, RPF_RSS_REDIR_WR_EN, 1);
@@ -3339,8 +3341,6 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 	int i;
 	int error = 0;
 
-	rxring->ring_readidx = 0;
-
 	/* disable DMA once */
 	AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_ENABLE, 0);
 
@@ -3372,9 +3372,9 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_HEADER_SPLIT, 0);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_VLAN_STRIP, 0);
 
-		/* reset HEAD and TAIL pointer */
-		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK, 0);
+		/* reset TAIL pointer, and update readidx (HEAD pointer cannot write) */
 		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(ringidx), AQ_RXD_NUM - 1);
+		rxring->ring_readidx = AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK);
 
 		/* Rx ring set mode */
 
@@ -3387,6 +3387,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 		AQ_WRITE_REG_BIT(sc, RDM_DCAD_ADR(ringidx), RDM_DCAD_DESC_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RDM_DCAD_ADR(ringidx), RDM_DCAD_HEADER_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RDM_DCAD_ADR(ringidx), RDM_DCAD_PAYLOAD_EN, 0);
+
 
 		/* rxring_start: start receiving */
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_ENABLE, 1);
@@ -3588,6 +3589,7 @@ aq_rx_intr_poll(struct aq_rxring *rxring)
 
 	if (rxring->ring_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(rxring->ring_index), RX_DMA_DESC_HEAD_PTR_MSK))
 		return 0;
+
 	return 1;
 }
 #endif
