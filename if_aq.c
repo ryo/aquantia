@@ -1,7 +1,6 @@
 //
 // PROBLEM
 //	iperfのudpが極端に遅い。落としまくってる? 他のNICでも起きるのでaqの問題ではなさそう。
-//	謎条件で、pingをとりこぼしまくる。attachしてすぐにIP addressを設定すると起きやすい? 初期化問題?
 //
 // MEMO?
 //	VLANIDで16ヶのringに振り分け可能?
@@ -9,6 +8,10 @@
 //	L3 filterはで8ヶのringに振り分け可能?
 //		（Linux版のAQ_RX_FIRST_LOC_FVLANIDあたりの定義より）
 //	そうだとすると、RX_FLR_RSS_CONTROL1_ADR の 0x33333333 の意味がなんとなくわかる(0b11が8ヶ=8ring分)
+//
+//	L3-L4フィルタはその名の通り、discardするかhostのどのringで受けるかを決めるテーブルであり、rssとは関係ないようだ。
+//
+//
 //
 //
 // TODO
@@ -26,6 +29,9 @@
 //	fulldup control? (100baseTX)
 //	fw1x (revision A0)
 //
+// DONE
+//	謎条件で、pingをとりこぼしまくる。attachしてすぐにIP addressを設定すると起きやすい? 初期化問題?
+//		→どうやらaq_update_link_status()でRPB_RXB_XOFF_ENをセットしていたからっぽい? 0固定で良いっぽい。
 
 //#define XXX_FORCE_32BIT_PA
 //#define XXX_DEBUG_PMAP_EXTRACT
@@ -148,7 +154,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define CONFIG_LRO_ENABLE	0
 #define CONFIG_RSS_ENABLE	0
-#define CONFIG_RSS_L3_ENABLE	CONFIG_RSS_ENABLE
+#define CONFIG_L3_FILTER_ENABLE	0
 
 #define HW_ATL_RSS_HASHKEY_SIZE			40
 #define HW_ATL_RSS_INDIRECTION_TABLE_MAX	64
@@ -168,7 +174,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  HW_ATL_MIF_CMD_BUSY				0x00000100
 #define HW_ATL_MIF_ADDR				0x0208
 #define HW_ATL_MIF_VAL				0x020c
-#define HW_ATL_GLB_CPU_SCRATCH_SCP_ADR(i)	(0x0300 + (i) * 0x4)
+#define HW_ATL_GLB_CPU_SCRATCH_SCP_ADR(i)	(0x0300 + (i) * 4)
 
 #define FW2X_MPI_LED_ADDR			0x031c
 #define  FW2X_LED_BLINK				0x2
@@ -187,14 +193,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define   RBL_STATUS_FAILURE				0x00000bad
 #define   RBL_STATUS_HOST_BOOT				0x0000f1a7
 
-//#define GLB_CPU_NO_RESET_SCRATCHPAD_ADR(i)	(0x0380 + (i) * 0x4)
+//#define GLB_CPU_NO_RESET_SCRATCHPAD_ADR(i)	(0x0380 + (i) * 4)
 //#define  NO_RESET_SCRATCHPAD_RBL_STATUS		2	// = 0x0388 = HW_ATL_MPI_BOOT_EXIT_CODE
 //#define   NO_RESET_SCRATCHPAD_RBL_STATUS_MAGIC_DEAD	0x0000dead
 //#define   RBL_STATUS_SUCCESS				0x0000abba
 //#define   RBL_STATUS_FAILURE				0x00000bad
 //#define   RBL_STATUS_HOST_BOOT				0x0000f1a7
 
-#define HW_ATL_GLB_CPU_SEM_ADR(i)		(0x03a0 + (i) * 0x4)
+#define HW_ATL_GLB_CPU_SEM_ADR(i)		(0x03a0 + (i) * 4)
 #define  HW_ATL_FW_SM_RAM			2	// = 0x03a8
 
 #define HW_ATL_MCP_UP_FORCE_INTERRUPT_ADR	0x0404
@@ -222,7 +228,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_INTR_IRQ_MAP_RX_MSK(rx)		(__BITS(12,8)  >> (((rx) & 1) * 8))
 #define AQ_INTR_IRQ_MAP_RX_EN_MSK(rx)		(__BIT(15)     >> (((rx) & 1) * 8))
 
-#define AQ_GEN_INTR_MAP_ADR(i)			(0x2180 + (i) * 0x4)
+#define AQ_GEN_INTR_MAP_ADR(i)			(0x2180 + (i) * 4)
 #define  HW_ATL_B0_ERR_INT			8
 
 #define AQ_INTR_CTRL				0x2300
@@ -257,8 +263,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPFL2BC_ACT_MSK			__BITS(12,14)
 #define  RPFL2BC_THRESH_MSK			__BITS(31,16)
 
-#define RPFL2UC_DAFLSW_ADR(idx)			(0x5110 + (idx) * 0x8)
-#define RPFL2UC_DAFMSW_ADR(idx)			(0x5114 + (idx) * 0x8)
+#define RPFL2UC_DAFLSW_ADR(idx)			(0x5110 + (idx) * 8)
+#define RPFL2UC_DAFMSW_ADR(idx)			(0x5114 + (idx) * 8)
 #define  RPFL2UC_DAFMSW_MACADDR_HI		__BITS(15,0)
 #define  RPFL2UC_DAFMSW_ACTF			__BITS(18,16)
 #define  RPFL2UC_DAFMSW_EN			__BIT(31)
@@ -266,7 +272,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_HW_MAC_MIN			1
 #define AQ_HW_MAC_MAX			33
 
-#define RPF_MCAST_FILTER_REG(i)			(0x5250 + (i) * 0x4)
+#define RPF_MCAST_FILTER_REG(i)			(0x5250 + (i) * 4)
 #define  RPF_MCAST_FILTER_ENABLE		__BIT(31)
 #define RPF_MCAST_FILTER_MASK_REG		0x5270
 #define  RPF_MCAST_FILTER_MASK_ALLMULTI		__BIT(14)
@@ -289,7 +295,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_VL_TPID_OUTER_MSK			__BITS(31,16)
 #define  RPF_VL_TPID_INNER_MSK			__BITS(15,0)
 
-#define RPF_ET_ENF_ADR(n)			(0x5300 + (n) * 0x4)
+#define RPF_ET_ENF_ADR(n)			(0x5300 + (n) * 4)
 #define  RPF_ET_ENF_MSK				__BIT(31)
 #define  RPF_ET_UPFEN_MSK			__BIT(30)	// user priority filter enable
 #define  RPF_ET_RXQFEN_MSK			__BIT(29)	// RX queue filter enable
@@ -300,54 +306,31 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_ET_VALF_MSK			__BITS(15,0)
 
 
-//#define RPF_L3_CTRL_ADDR_BEGIN_FL3L4   0x5380		//
-//#define RPF_L3_SRCA_ADDR_BEGIN_FL3L4   0x53b0
-//#define RPF_L3_DESTA_ADDR_BEGIN_FL3L4  0x53d0
-
-#define RPF_L3_L4_ENF_ADR(f)		(0x5380 + (f) * 0x4)
-#define  RPF_L3_L4_ENF_MSK		__BIT(31)
-#define  RPF_L3_V6_ENF_MSK		__BIT(30)
-#define  RPF_L3_SAF_EN			__BIT(29)	// source address filter?
-#define  RPF_L3_DAF_EN			__BIT(28)	// destination address filter?
-#define  RPF_L4_SPF_EN			__BIT(27)	// source port filter?
-#define  RPF_L4_DPF_EN			__BIT(26)	// destination port filter?
-#define  RPF_L4_PROTF_EN_MSK		__BIT(25)	// L4 proto filter enable
-#define  RPF_L3_ARPF_EN_MSK		__BIT(24)	// ARP filter?
-#define  RPF_L3_L4_RXQF_EN_MSK		__BIT(23)
-#define  RPF_L3_L4_MNG_RXQF_MSK		__BIT(22)
-#define  RPF_L3_L4_ACTF_MSK		__BITS(16,18)
-#define   RPF_L3_FILTER_ACTION_DISCARD		0
-#define   RPF_L3_FILTER_ACTION_HOST		1
-#define  RPF_L3_L4_RXQF_MSK		__BITS(12,8)
-#define  RPF_L3_L4_PROTF_MSK		__BITS(2,0)
+#define RPF_L3_CTRL_REG(f)			(0x5380 + (f) * 4)	/* RPF_L3_CTRL_REG[8] */
+#define  RPF_L3_L4_ENABLE			__BIT(31)
+#define  RPF_L3_IPV6_ENABLE			__BIT(30)
+#define  RPF_L3_SRCADDR_ENABLE			__BIT(29)
+#define  RPF_L3_DSTADDR_ENABLE			__BIT(28)
+#define  RPF_L3_L4_SRCPORT_ENABLE		__BIT(27)
+#define  RPF_L3_L4_DSTPORT_ENABLE		__BIT(26)
+#define  RPF_L3_L4_PROTO_ENABLE			__BIT(25)
+#define  RPF_L3_ARP_ENABLE			__BIT(24)
+#define  RPF_L3_L4_RXQUEUE_ENABLE		__BIT(23)
+#define  RPF_L3_L4_RXQUEUE_MANAGEMENT_ENABLE	__BIT(22)
+#define  RPF_L3_L4_ACTION			__BITS(16,18)
+#define   RPF_L3_L4_ACTION_DISCARD		0
+#define   RPF_L3_L4_ACTION_HOST			1
+#define  RPF_L3_L4_RXQUEUE			__BITS(12,8)
+#define  RPF_L3_L4_PROTO			__BITS(2,0)
 #define   RPF_L3_L4_PROTF_TCP			0
 #define   RPF_L3_L4_PROTF_UDP			1
 #define   RPF_L3_L4_PROTF_SCTP			2
 #define   RPF_L3_L4_PROTF_ICMP			3
 
-////cleanup version
-//#define  RPF_L3_L4_ENABLE			__BIT(31)
-//#define  RPF_L3_IPV6_ENABLE			__BIT(30)
-//#define  RPF_L3_SRCADDR_ENABLE			__BIT(29)
-//#define  RPF_L3_DSTADDR_ENABLE			__BIT(28)
-//#define  RPF_L3_L4_SRCPORT_ENABLE		__BIT(27)
-//#define  RPF_L3_L4_DSTPORT_ENABLE		__BIT(26)
-//#define  RPF_L3_L4_PROTO_ENABLE			__BIT(25)
-//#define  RPF_L3_ARP_ENABLE			__BIT(24)
-//#define  RPF_L3_L4_RXQUEUE_ENABLE		__BIT(23)
-//#define  RPF_L3_L4_RXQUEUE_MANAGEMENT_ENABLE	__BIT(22)
-//#define  RPF_L3_L4_ACTION			__BITS(16,18)
-//#define   RPF_L3_L4_ACTION_DISCARD		0
-//#define   RPF_L3_L4_ACTION_HOST			1
-//#define  RPF_L3_L4_RXQUEUE			__BITS(12,8)
-//#define  RPF_L3_L4_PROTO			__BITS(2,0)
-//#define   RPF_L3_L4_PROTF_TCP			0
-//#define   RPF_L3_L4_PROTF_UDP			1
-//#define   RPF_L3_L4_PROTF_SCTP			2
-//#define   RPF_L3_L4_PROTF_ICMP			3
-
-
-
+#define RPF_L3_SRCADDR(f)			(0x53b0 + (f) * 4)
+#define RPF_L3_DSTADDR(f)			(0x53d0 + (f) * 4)
+#define RPF_L4_SRCPORT(f)			(0x5400 + (f) * 4)
+#define RPF_L4_DSTPORT(f)			(0x5420 + (f) * 4)
 
 
 
@@ -394,20 +377,19 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define RPO_LRO_MAX_IVAL_ADR			0x5620
 #define  RPO_LRO_MAX_IVAL_MSK			__BITS(9,0)
 
+
 #define RPB_RPF_RX_ADR				0x5700
 #define  RPB_RPF_RX_TC_MODE			__BIT(8)
 #define  RPB_RPF_RX_FC_MODE			__BITS(5,4)
 #define  RPB_RPF_RX_BUF_EN			__BIT(0)
 
-
-#define RPB_RXBBUF_SIZE_ADR(n)			(0x5710 + (n) * 0x10)
+#define RPB_RXBBUF_SIZE_ADR(n)			(0x5710 + (n) * 16)
 #define  RPB_RXBBUF_SIZE_MSK			__BITS(8,0)
 
-#define RPB_RXB_XOFF_ADR(n)			(0x5714 + (n) * 0x10)
+#define RPB_RXB_XOFF_ADR(n)			(0x5714 + (n) * 16)
 #define  RPB_RXB_XOFF_EN			__BIT(31)
 #define  RPB_RXB_XOFF_THRESH_HI			__BITS(29,16)
 #define  RPB_RXB_XOFF_THRESH_LO			__BITS(13,0)
-
 
 
 
@@ -418,26 +400,26 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RX_DMA_INT_DESC_WRWB_EN		__BIT(2)
 #define  RX_DMA_INT_DESC_MODERATE_EN		__BIT(3)
 
-#define RX_INTR_MODERATION_CTL_ADR(n)		(0x5a40 + (n) * 0x4)
+#define RX_INTR_MODERATION_CTL_ADR(n)		(0x5a40 + (n) * 4)
 
-#define RX_DMA_DESC_BASE_ADDRLSW_ADR(n)		(0x5b00 + (n) * 0x20)
-#define RX_DMA_DESC_BASE_ADDRMSW_ADR(n)		(0x5b04 + (n) * 0x20)
-#define RX_DMA_DESC_LEN_ADR(n)			(0x5b08 + (n) * 0x20)
+#define RX_DMA_DESC_BASE_ADDRLSW_ADR(n)		(0x5b00 + (n) * 32)
+#define RX_DMA_DESC_BASE_ADDRMSW_ADR(n)		(0x5b04 + (n) * 32)
+#define RX_DMA_DESC_LEN_ADR(n)			(0x5b08 + (n) * 32)
 #define  RX_DMA_DESC_LEN_MSK			__BITS(12,3)	/* RXD_NUM/8 */
 #define  RX_DMA_DESC_RESET			__BIT(25)
 #define  RX_DMA_DESC_HEADER_SPLIT		__BIT(28)
 #define  RX_DMA_DESC_VLAN_STRIP			__BIT(29)
 #define  RX_DMA_DESC_ENABLE			__BIT(31)
 
-#define RX_DMA_DESC_HEAD_PTR_ADR(n)		(0x5b0c + (n) * 0x20)
+#define RX_DMA_DESC_HEAD_PTR_ADR(n)		(0x5b0c + (n) * 32)
 #define  RX_DMA_DESC_HEAD_PTR_MSK		__BITS(12,0)
-#define RX_DMA_DESC_TAIL_PTR_ADR(n)		(0x5b10 + (n) * 0x20)
+#define RX_DMA_DESC_TAIL_PTR_ADR(n)		(0x5b10 + (n) * 32)
 
-#define RX_DMA_DESC_BUFSIZE_ADR(n)		(0x5b18 + (n) * 0x20)
+#define RX_DMA_DESC_BUFSIZE_ADR(n)		(0x5b18 + (n) * 32)
 #define  RX_DMA_DESC_BUFSIZE_DATA_MSK		__BITS(4,0)
 #define  RX_DMA_DESC_BUFSIZE_HDR_MSK		__BITS(12,8)
 
-#define RDM_DCAD_ADR(n)				(0x6100 + (n) * 0x4)
+#define RDM_DCAD_ADR(n)				(0x6100 + (n) * 4)
 #define  RDM_DCAD_CPUID_MSK			__BITS(7,0)
 #define  RDM_DCAD_PAYLOAD_EN			__BIT(29)
 #define  RDM_DCAD_HEADER_EN			__BIT(30)
@@ -467,11 +449,11 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TPS_DESC_TC_ARB_MODE_MSK		__BITS(1,0)
 #define TPS_DATA_TC_ARB_MODE_ADR		0x7100
 #define  TPS_DATA_TC_ARB_MODE_MSK		__BIT(0)
-#define TPS_DATA_TCTCREDIT_MAX_ADR(tc)		(0x7110 + (tc) * 0x4)
+#define TPS_DATA_TCTCREDIT_MAX_ADR(tc)		(0x7110 + (tc) * 4)
 #define  TPS_DATA_TCTCREDIT_MAX_MSK		__BITS(16,27)
 #define TPS_DATA_TCTWEIGHT_ADR(tc)		TPS_DATA_TCTCREDIT_MAX_ADR(tc)
 #define  TPS_DATA_TCTWEIGHT_MSK			__BITS(8,0)
-#define TPS_DESC_TCTCREDIT_MAX_ADR(tc)		(0x7210 + (tc) * 0x4)
+#define TPS_DESC_TCTCREDIT_MAX_ADR(tc)		(0x7210 + (tc) * 4)
 #define  TPS_DESC_TCTCREDIT_MAX_MSK		__BITS(16,27)
 #define TPS_DESC_TCTWEIGHT_ADR(tc)		TPS_DESC_TCTCREDIT_MAX_ADR(tc)
 #define  TPS_DESC_TCTWEIGHT_MSK			__BITS(8,0)
@@ -499,9 +481,9 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TPB_TX_BUF_SCP_INS_EN			__BIT(2)
 #define  TPB_TX_BUF_TC_MODE_EN			__BIT(8)
 
-#define TPB_TXBBUF_SIZE_ADR(buffer)		(0x7910 + (buffer) * 0x10)
+#define TPB_TXBBUF_SIZE_ADR(buffer)		(0x7910 + (buffer) * 16)
 #define  TPB_TXBBUF_SIZE_MSK			__BITS(7,0)
-#define TPB_TXB_THRESH_ADR(buffer)		(0x7914 + (buffer) * 0x10)
+#define TPB_TXB_THRESH_ADR(buffer)		(0x7914 + (buffer) * 16)
 #define  TPB_TXB_THRESH_HI			__BITS(16,28)
 #define  TPB_TXB_THRESH_LO			__BITS(12,0)
 
@@ -510,19 +492,19 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TX_DMA_INT_DESC_WRWB_EN		__BIT(1)
 #define  TX_DMA_INT_DESC_MODERATE_EN		__BIT(4)
 
-#define TX_DMA_DESC_BASE_ADDRLSW_ADR(n)		(0x7c00 + (n) * 0x40)
-#define TX_DMA_DESC_BASE_ADDRMSW_ADR(n)		(0x7c04 + (n) * 0x40)
-#define TX_DMA_DESC_LEN_ADR(n)			(0x7c08 + (n) * 0x40)
+#define TX_DMA_DESC_BASE_ADDRLSW_ADR(n)		(0x7c00 + (n) * 64)
+#define TX_DMA_DESC_BASE_ADDRMSW_ADR(n)		(0x7c04 + (n) * 64)
+#define TX_DMA_DESC_LEN_ADR(n)			(0x7c08 + (n) * 64)
 #define  TX_DMA_DESC_LEN_MSK			__BITS(12, 3)	/* TXD_NUM/8 */
 #define  TX_DMA_DESC_ENABLE			__BIT(31)
-#define TX_DMA_DESC_HEAD_PTR_ADR(n)		(0x7c0c + (n) * 0x40)	/* index of desc */
+#define TX_DMA_DESC_HEAD_PTR_ADR(n)		(0x7c0c + (n) * 64)	/* index of desc */
 #define  TX_DMA_DESC_HEAD_PTR_MSK		__BITS(12,0)
-#define TX_DMA_DESC_TAIL_PTR_ADR(n)		(0x7c10 + (n) * 0x40)	/* index of desc */
+#define TX_DMA_DESC_TAIL_PTR_ADR(n)		(0x7c10 + (n) * 64)	/* index of desc */
 
-#define TX_DMA_DESC_WRWB_THRESH_ADR(n)		(0x7c18 + (n) * 0x40)
+#define TX_DMA_DESC_WRWB_THRESH_ADR(n)		(0x7c18 + (n) * 64)
 #define  TX_DMA_DESC_WRWB_THRESH		__BITS(14,8)
 
-#define TDM_DCAD_ADR(n)				(0x8400 + (n) * 0x4)
+#define TDM_DCAD_ADR(n)				(0x8400 + (n) * 4)
 #define  TDM_DCAD_CPUID_MSK			__BITS(7,0)
 #define  TDM_DCAD_CPUID_EN			__BIT(31)
 
@@ -530,7 +512,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TDM_DCA_EN				__BIT(31)
 #define  TDM_DCA_MODE				__BITS(3,0)
 
-#define TX_INTR_MODERATION_CTL_ADR(n)		(0x8980 + (n) * 0x4)
+#define TX_INTR_MODERATION_CTL_ADR(n)		(0x8980 + (n) * 4)
 
 #define FW2X_CTRL_10BASET_HD		__BIT(0)
 #define FW2X_CTRL_10BASET_FD		__BIT(1)
@@ -825,12 +807,12 @@ typedef struct aq_tx_desc {
 #define AQ_TXD_MAX	8184	/* = 0x1ff8 = 8192 - 8 */
 
 /* configuration for this driver */
-#define AQ_TXRING_NUM	32
-#define AQ_RXRING_NUM	32
+#define AQ_TXRING_NUM	8
+#define AQ_RXRING_NUM	8
 #define AQ_TXD_NUM	2048	/* per ring. must be 8*n */
 #define AQ_RXD_NUM	2048	/* per ring. must be 8*n */
 
-#define LINKUP_IRQ	0	/* XXX: shared with ring[0] */
+#define LINKSTAT_IRQ	31	/* shared with ring[31] */
 
 
 struct aq_txring {
@@ -931,7 +913,7 @@ struct aq_softc {
 
 	bool sc_lro_enable;
 	bool sc_rss_enable;
-	bool sc_rss_l3_enable;
+	bool sc_l3_filter_enable;
 	uint8_t sc_rss_key[HW_ATL_RSS_HASHKEY_SIZE];
 	uint8_t sc_rss_table[HW_ATL_RSS_INDIRECTION_TABLE_MAX];
 
@@ -2154,6 +2136,7 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 		AQ_WRITE_REG_BIT(sc, RPF_ET_ENF_ADR(i), RPF_ET_VALF_MSK, 0);
 		AQ_WRITE_REG_BIT(sc, RPF_ET_ENF_ADR(i), RPF_ET_UPFEN_MSK, 0);
 		AQ_WRITE_REG_BIT(sc, RPF_ET_ENF_ADR(i), RPF_ET_UPF_MSK, 0);
+		AQ_WRITE_REG_BIT(sc, RPF_ET_ENF_ADR(1), RPF_ET_ACTF_MSK, 1);
 	}
 
 	if (sc->sc_rss_enable) {
@@ -2234,8 +2217,11 @@ aq_hw_interrupt_moderation_set(struct aq_softc *sc)
 
 	for (i = 0; i < sc->sc_txringnum; i++) {
 		AQ_WRITE_REG(sc, TX_INTR_MODERATION_CTL_ADR(i), 0);
+	}
+	for (i = 0; i < sc->sc_rxringnum; i++) {
 		AQ_WRITE_REG(sc, RX_INTR_MODERATION_CTL_ADR(i), 0);
 	}
+
 #else
 	/* moderation on */
 	AQ_WRITE_REG_BIT(sc, TX_DMA_INT_DESC_WRWB_EN_ADR, TX_DMA_INT_DESC_WRWB_EN, 0);
@@ -2284,6 +2270,7 @@ aq_hw_qos_set(struct aq_softc *sc)
 	tc = 0;
 	buff_size = AQ_HW_RXBUF_MAX;
 	AQ_WRITE_REG_BIT(sc, RPB_RXBBUF_SIZE_ADR(tc), RPB_RXBBUF_SIZE_MSK, buff_size);
+	AQ_WRITE_REG_BIT(sc, RPB_RXB_XOFF_ADR(tc), RPB_RXB_XOFF_EN, 0);
 	AQ_WRITE_REG_BIT(sc, RPB_RXB_XOFF_ADR(tc), RPB_RXB_XOFF_THRESH_HI, (buff_size * (1024 / 32) * 66) / 100);
 	AQ_WRITE_REG_BIT(sc, RPB_RXB_XOFF_ADR(tc), RPB_RXB_XOFF_THRESH_LO, (buff_size * (1024 / 32) * 50) / 100);
 
@@ -2393,7 +2380,6 @@ aq_hw_rss_set(struct aq_softc *sc)
 	}
 
 	for (i = __arraycount(bitary); i--;) {
-		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_ADDR_ADR, RPF_RSS_REDIR_WR_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_WR_DATA_ADR, RPF_RSS_REDIR_WR_DATA_MSK, bitary[i]);
 		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_ADDR_ADR, RPF_RSS_REDIR_ADDR_MSK, i);
 		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_ADDR_ADR, RPF_RSS_REDIR_WR_EN, 1);
@@ -2406,53 +2392,27 @@ aq_hw_rss_set(struct aq_softc *sc)
 }
 
 static void
-aq_hw_rss_l3_set(struct aq_softc *sc, bool enable)
+aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 {
 	int i;
 
-	/* clear */
-	for (i = 0; i < 32; i++) {
-		AQ_WRITE_REG(sc, RPF_L3_L4_ENF_ADR(i), 0);
+	/* clear all filter */
+	for (i = 0; i < 8; i++) {
+		AQ_WRITE_REG(sc, RPF_L3_CTRL_REG(i), 0);
 	}
 
-	if (enable) {
-		//XXX: TODO
-		// IPv4
-		// IPv6
-		// etc?
-
-		for (i = 0; i < 32; i++) {
-			AQ_WRITE_REG(sc, RPF_L3_L4_ENF_ADR(i), 0);
-			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), RPF_L3_L4_ENF_MSK, 1);
-			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), RPF_L3_L4_RXQF_EN_MSK, 1);
-			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), RPF_L3_L4_ACTF_MSK, RPF_L3_FILTER_ACTION_HOST);
-
-			// select ring
-//			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), RPF_L3_L4_RXQF_MSK, i % sc->sc_rxringnum);
-			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), RPF_L3_L4_RXQF_MSK, 7);
-
-//			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), 
-//			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), 
-//			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), 
-//			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), 
-//			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), 
-//			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), 
-//			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), 
-//			AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(i), 
-		}
-	} else {
-		/* HW bug workaround:
-		 * Disable RSS for UDP using rx flow filter 0.
-		 * HW does not track RSS stream for fragmenged UDP,
-		 * 0x5040 control reg does not work.
-		 */
-		AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(0), RPF_L3_L4_ENF_MSK, 1);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(0), RPF_L4_PROTF_EN_MSK, 1);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(0), RPF_L3_L4_RXQF_EN_MSK, 1);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(0), RPF_L3_L4_ACTF_MSK, RPF_L3_FILTER_ACTION_HOST);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(0), RPF_L3_L4_RXQF_MSK, 0);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_L4_ENF_ADR(0), RPF_L3_L4_PROTF_MSK, RPF_L3_L4_PROTF_UDP);
-	}
+	/*
+	 * HW bug workaround:
+	 * Disable RSS for UDP using rx flow filter 0.
+	 * HW does not track RSS stream for fragmenged UDP,
+	 * 0x5040 control reg does not work.
+	 */
+	AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_ENABLE, 1);
+	AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_PROTO_ENABLE, 1);
+	AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_PROTO, RPF_L3_L4_PROTF_UDP);
+	AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_RXQUEUE_ENABLE, 1);
+	AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_RXQUEUE, 0);
+	AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_ACTION, RPF_L3_L4_ACTION_HOST);
 }
 
 static void
@@ -2489,8 +2449,8 @@ aq_hw_init(struct aq_softc *sc)
 	aq_hw_qos_set(sc);
 
 	/* Enable interrupt */
-	int irqmode =  AQ_INTR_CTRL_IRQMODE_LEGACY;
-//	int irqmode =  AQ_INTR_CTRL_IRQMODE_MSI;
+//	int irqmode =  AQ_INTR_CTRL_IRQMODE_LEGACY;	// spurious interrupt occurs??? (intr-status=0)
+	int irqmode =  AQ_INTR_CTRL_IRQMODE_MSI;
 //	int irqmode =  AQ_INTR_CTRL_IRQMODE_MSIX;
 
 #if 0
@@ -2503,13 +2463,13 @@ aq_hw_init(struct aq_softc *sc)
 
 	AQ_WRITE_REG(sc, AQ_INTR_AUTOMASK, 0xffffffff);
 
-//	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_ADR(0),
-//	    ((HW_ATL_B0_ERR_INT << 24) | (1 << 31)) |
-//	    ((HW_ATL_B0_ERR_INT << 16) | (1 << 23))
-//	);
+	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_ADR(0),
+	    ((HW_ATL_B0_ERR_INT << 24) | (1 << 31)) |
+	    ((HW_ATL_B0_ERR_INT << 16) | (1 << 23))
+	);
 
 	/* link interrupt */
-	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_ADR(3), __BIT(7) | LINKUP_IRQ);
+	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_ADR(3), __BIT(7) | LINKSTAT_IRQ);
 
 	aq_hw_offload_set(sc);
 
@@ -2573,9 +2533,6 @@ aq_update_link_status(struct aq_softc *sc)
 		sc->sc_link_rate = rate;
 		sc->sc_link_fc = fc;
 		sc->sc_link_eee = eee;
-
-		/* turn on/off RX Pause in RPB */
-		AQ_WRITE_REG_BIT(sc, RPB_RXB_XOFF_ADR(0), RPB_RXB_XOFF_EN, (fc != AQ_FC_NONE) ? 1 : 0);
 
 		aq_mediastatus_update(sc);
 
@@ -3023,7 +2980,7 @@ aq_intr(void *arg)
 	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()), AQ_READ_REG(sc, AQ_INTR_MASK), status, AQ_READ_REG(sc, AQ_INTR_STATUS));
 #endif
 
-	if (status & __BIT(LINKUP_IRQ)) {
+	if (status & __BIT(LINKSTAT_IRQ)) {
 		nintr += aq_update_link_status(sc);
 	}
 
@@ -3032,7 +2989,8 @@ aq_intr(void *arg)
 			mutex_enter(&sc->sc_rxring[i].ring_mutex);
 			n = aq_rx_intr(&sc->sc_rxring[i]);
 			mutex_exit(&sc->sc_rxring[i].ring_mutex);
-			nintr += n;
+			if (n != 0)
+				nintr++;
 #ifdef XXX_INTR_DEBUG
 			rxcount[i] = n;
 #endif
@@ -3043,7 +3001,8 @@ aq_intr(void *arg)
 			mutex_enter(&sc->sc_txring[i].ring_mutex);
 			n = aq_tx_intr(&sc->sc_txring[i]);
 			mutex_exit(&sc->sc_txring[i].ring_mutex);
-			nintr += n;
+			if (n != 0)
+				nintr++;
 #ifdef XXX_INTR_DEBUG
 			txcount[i] = n;
 #endif
@@ -3052,13 +3011,13 @@ aq_intr(void *arg)
 
 #ifdef XXX_INTR_DEBUG
 	printf("RX:");
-	for (i = 0; i < 32; i++) {
-		printf("%c", (rxcount[i] & 15) + (aq_rx_intr_poll(&sc->sc_rxring[i]) ? 0x10 : 0) + ' ');
+	for (i = 0; i < sc->sc_rxringnum; i++) {
+		printf("%d%s", rxcount[i], aq_rx_intr_poll(&sc->sc_rxring[i]) ? "!" : " ");
 	}
 
 	printf(" / TX:");
-	for (i = 0; i < 32; i++) {
-		printf("%c", (txcount[i] & 15) + (aq_tx_intr_poll(&sc->sc_txring[i]) ? 0x10 : 0) + ' ');
+	for (i = 0; i < sc->sc_txringnum; i++) {
+		printf("%d%s", txcount[i], aq_tx_intr_poll(&sc->sc_txring[i]) ? "!" : " ");
 	}
 	printf("\n");
 #endif
@@ -3069,19 +3028,16 @@ aq_intr(void *arg)
 
 /* Interrupt enable / disable */
 static void
-aq_enable_intr(struct aq_softc *sc, bool linkup, bool txrx)
+aq_enable_intr(struct aq_softc *sc, bool link, bool txrx)
 {
-	/* Enable interrupts */
-	if (txrx) {
-		/* including linkup intr */
-		AQ_WRITE_REG(sc, AQ_INTR_MASK, __BITS(0, sc->sc_ringnum - 1));
-	} else if (linkup) {
-		/* only linkup intr */
-		AQ_WRITE_REG(sc, AQ_INTR_MASK, __BIT(LINKUP_IRQ));
-	} else {
-		AQ_WRITE_REG(sc, AQ_INTR_MASK, 0);
-	}
+	uint32_t imask = 0;
 
+	if (txrx)
+		imask |= __BITS(0, sc->sc_ringnum - 1);
+	if (link)
+		imask |= __BIT(LINKSTAT_IRQ);
+
+	AQ_WRITE_REG(sc, AQ_INTR_MASK, imask);
 	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR, 0xffffffff);	//XXX
 
 	printf("%s:%d: INTR_MASK/INTR_STATUS=%08x/%08x\n", __func__, __LINE__, AQ_READ_REG(sc, AQ_INTR_MASK), AQ_READ_REG(sc, AQ_INTR_STATUS));
@@ -3178,7 +3134,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 
 	sc->sc_lro_enable = CONFIG_LRO_ENABLE;
 	sc->sc_rss_enable = CONFIG_RSS_ENABLE;
-	sc->sc_rss_l3_enable = CONFIG_RSS_L3_ENABLE;
+	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_ENABLE;
 
 	sc->sc_txringnum = AQ_TXRING_NUM;
 	sc->sc_rxringnum = AQ_RXRING_NUM;
@@ -3539,7 +3495,7 @@ aq_tx_intr(struct aq_txring *txring)
 {
 	struct aq_softc *sc = txring->ring_sc;
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	unsigned int idx, hw_head;
+	unsigned int idx, hw_head, n;
 
 	//XXX: need lock
 
@@ -3557,7 +3513,8 @@ aq_tx_intr(struct aq_txring *txring)
 	    txring->ring_considx);
 #endif
 
-	for (idx = txring->ring_considx; idx != hw_head; idx = TXRING_NEXTIDX(idx)) {
+	for (idx = txring->ring_considx, n = 0; idx != hw_head;
+	    idx = TXRING_NEXTIDX(idx), n++) {
 
 #if 0
 		printf("# %s:%d: txring=%d, TX CLEANUP: HEAD/TAIL=%lu/%u, considx/prodidx=%d/%d, idx=%d\n", __func__, __LINE__,
@@ -3620,7 +3577,7 @@ aq_tx_intr(struct aq_txring *txring)
 #endif
 	}
 
-	return 1;
+	return n;
 }
 
 #ifdef  XXX_INTR_DEBUG
@@ -3645,7 +3602,7 @@ aq_rx_intr(struct aq_rxring *rxring)
 	struct mbuf *m, *m0, *mprev;
 	uint32_t rxd_type, rxd_hash __unused;
 	uint16_t rxd_status, rxd_pktlen, rxd_nextdescptr __unused, rxd_vlan __unused;
-	unsigned int idx, amount;
+	unsigned int idx, amount, n;
 
 	if (rxring->ring_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK))
 		return 0;
@@ -3670,9 +3627,9 @@ aq_rx_intr(struct aq_rxring *rxring)
 
 	m0 = mprev = NULL;
 	amount = 0;
-	for (idx = rxring->ring_readidx;
+	for (idx = rxring->ring_readidx, n = 0;
 	    idx != AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_ADR(ringidx), RX_DMA_DESC_HEAD_PTR_MSK);
-	    idx = RXRING_NEXTIDX(idx)) {
+	    idx = RXRING_NEXTIDX(idx), n++) {
 
 		bus_dmamap_sync(sc->sc_dmat, rxring->ring_rxdesc_dmamap,
 		    sizeof(aq_rx_desc_t) * idx, sizeof(aq_rx_desc_t),
@@ -3693,9 +3650,9 @@ aq_rx_intr(struct aq_rxring *rxring)
 		}
 
 		rxd_pktlen = le16toh(rxd->wb.pkt_len);
-//		rxd_nextdescptr = le16toh(rxd->wb.next_desc_ptr);
-//		rxd_hash = le32toh(rxd->wb.rss_hash);
-//		rxd_vlan = le16toh(rxd->wb.vlan);
+		rxd_nextdescptr = le16toh(rxd->wb.next_desc_ptr);
+		rxd_hash = le32toh(rxd->wb.rss_hash);
+		rxd_vlan = le16toh(rxd->wb.vlan);
 
 #ifdef XXX_RXINTR_DEBUG
 		printf("desc[%d] type=0x%08x, hash=0x%08x, status=0x%08x, pktlen=%u, nextdesc=%u, vlan=0x%x\n",
@@ -3755,7 +3712,7 @@ aq_rx_intr(struct aq_rxring *rxring)
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_ADR(ringidx)), rxring->ring_readidx);
 #endif
 
-	return 1;
+	return n;
 }
 
 static int
@@ -3814,7 +3771,7 @@ aq_init(struct ifnet *ifp)
 //	aq_hw_start();
 	aq_hw_rss_hash_set(sc);
 	aq_hw_rss_set(sc);
-	aq_hw_rss_l3_set(sc, sc->sc_rss_l3_enable);
+	aq_hw_l3_filter_set(sc, sc->sc_l3_filter_enable);
 
 	aq_enable_intr(sc, true, true);
 
@@ -3905,28 +3862,27 @@ aq_stop(struct ifnet *ifp, int disable)
 	//XXX: need lock
 	printf("%s:%d: disable=%d\n", __func__, __LINE__, disable);
 
-	/* disable interrupts */
-	aq_enable_intr(sc, false, false);
+	/* disable tx/rx interrupts */
+	aq_enable_intr(sc, true, false);
 
-	for (i = 0; i < sc->sc_txringnum; i++) {
+	AQ_WRITE_REG_BIT(sc, TPB_TX_BUF_ADR, TPB_TX_BUF_EN, 0);
+	for (i = 0; i < sc->sc_txringnum; i++)
 		aq_txring_reset(sc, &sc->sc_txring[i], false);
-	}
-	for (i = 0; i < sc->sc_rxringnum; i++) {
+
+	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_ADR, RPB_RPF_RX_BUF_EN, 0);
+	for (i = 0; i < sc->sc_rxringnum; i++)
 		aq_rxring_reset(sc, &sc->sc_rxring[i], false);
-	}
-	//toggle cache
+
+	/* invalidate RX descriptor cache */
 	AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_CACHE_INIT_ADR, RX_DMA_DESC_CACHE_INIT_MSK,
 	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_CACHE_INIT_ADR, RX_DMA_DESC_CACHE_INIT_MSK) ^ 1);
 
 	ifp->if_timer = 0;
 
-	//XXX
-	if (disable) {
-		/* ifconfig down, but linkup intr is enabled */
-		aq_enable_intr(sc, true, false);
-	} else {
+	if (!disable) {
+		/* when pmf stop, disable link status intr, and callout */
+		aq_enable_intr(sc, false, false);
 #ifdef USE_CALLOUT_TICK
-		/* pmf stop, disable callout */
 		callout_stop(&sc->sc_tick_ch);
 #endif
 	}
@@ -3943,8 +3899,9 @@ aq_watchdog(struct ifnet *ifp)
 
 	uint32_t status;
 	status = AQ_READ_REG(sc, AQ_INTR_STATUS);
-	printf("####!!!! %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()), AQ_READ_REG(sc, AQ_INTR_MASK), status, AQ_READ_REG(sc, AQ_INTR_STATUS));
 
+	//XXX
+	printf("####!!!! %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()), AQ_READ_REG(sc, AQ_INTR_MASK), status, AQ_READ_REG(sc, AQ_INTR_STATUS));
 
 	for (n = 0; n < sc->sc_txringnum; n++) {
 		txring = &sc->sc_txring[n];
