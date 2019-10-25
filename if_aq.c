@@ -17,41 +17,6 @@
 //
 //	L3-L4フィルタはその名の通り、discardするかhostのどのringで受けるかを決めるテーブルであり、rssとは関係ないようだ。
 //
-//	LED
-//		初期状態	消灯
-//		linkup		オレンジ	パケットG-blink
-//		00000000	オレンジ	パケットG-blink
-//		00000002	オレンジ	G-blink
-//		000000ff	消灯		消灯
-//		000000cc	消灯		パケットG-blink
-//		0000002a	  G-blink		G-blink
-//		000000a8	  G-blink	パケットG-blink
-//		00000028	  G-blink	パケットG-blink
-//		00000020	O-G-blink	パケットG-blink
-//		00000033	O点灯		消灯
-//		00000011	G点灯		G点灯
-//		00000088	O-blink		パケットG-blink
-//		000000c8	O-blink		パケットG-blink
-//		00000008	O-blink		パケットG-blink
-//
-//		0b0000_0000			link-active
-//		0b0000_0001			link点灯
-//		0b0000_0010			link点滅
-//		0b0000_0011			link消灯
-//		0b0000_0100			link-active
-//		0b0000_0101			link点灯
-//		0b0000_0110			link点滅
-//		0b0000_0111			link消灯
-
-//		0b0000_1000	O-blink
-//		0b0001_0000	G点灯
-//		0b0001_1000	O-G-blink(弱)
-//		0b0010_0000	O-G-blink
-//		0b0010_1000	G-blink
-//		0b0011_0000	O点灯
-//		0b0011_1000	O点滅
-//		0b0011_1101	消灯		link点灯
-//		0b0011_1111	消灯
 //
 //
 //
@@ -204,7 +169,6 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  AQ_SOFTRESET_DISABLE			__BIT(14) /* reset disable */
 
 #define HW_ATL_MPI_FW_VERSION			0x0018
-#define  FW2X_FW_MIN_VER_LED			0x03010026
 #define GLB_FW_IMAGE_ID1_ADR			0x0018
 #define HW_ATL_GLB_MIF_ID_ADR			0x001c
 #define GLB_NVR_INTERFACE1_ADR			0x0100
@@ -215,11 +179,22 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define HW_ATL_MIF_VAL				0x020c
 #define HW_ATL_GLB_CPU_SCRATCH_SCP_ADR(i)	(0x0300 + (i) * 4)
 
-#define FW2X_MPI_LED_ADDR			0x031c
-#define  FW2X_LED_BLINK0			0x00000002
-#define  FW2X_LED_BLINK1			0x00000008
-#define  FW2X_LED_BLINK2			0x00000020
-#define  FW2X_LED_DEFAULT			0x0
+#define FW2X_LED_MIN_VERSION			0x03010026	/* require 3.1.38 */
+#define FW2X_LED_ADDR				0x031c
+#define  FW2X_LED_DEFAULT			0x00000000
+#define  FW2X_LED_NONE				0x0000003f
+#define  FW2X_LINKLED				__BITS(0,1)
+#define   FW2X_LINKLED_ACTIVE			0
+#define   FW2X_LINKLED_ON			1
+#define   FW2X_LINKLED_BLINK			2
+#define   FW2X_LINKLED_OFF			3
+#define  FW2X_STATUSLED				__BITS(2,5)
+#define   FW2X_STATUSLED_ORANGE			0
+#define   FW2X_STATUSLED_ORANGE_BLINK		2
+#define   FW2X_STATUSLED_OFF			3
+#define   FW2X_STATUSLED_GREEN			4
+#define   FW2X_STATUSLED_ORANGE_GREEN_BLINK	8
+#define   FW2X_STATUSLED_GREEN_BLINK		10
 
 #define HW_ATL_FW2X_MPI_EFUSE_ADDR		0x0364
 #define FW2X_MPI_CONTROL_ADDR			0x0368	/* 64bit */
@@ -911,7 +886,6 @@ struct aq_firmware_ops {
 	int (*get_mode)(struct aq_softc *, aq_hw_fw_mpi_state_e_t *,
 	    aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
 	int (*get_stats)(struct aq_softc *, aq_hw_stats_s_t *);
-	int (*led_control)(struct aq_softc *, uint32_t);
 };
 
 struct aq_softc {
@@ -1063,14 +1037,12 @@ static int fw2x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t,
 static int fw2x_get_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t *,
     aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
 static int fw2x_get_stats(struct aq_softc *, aq_hw_stats_s_t *);
-static int fw2x_led_control(struct aq_softc *, uint32_t);
 
 static struct aq_firmware_ops aq_fw1x_ops = {
 	.reset = fw1x_reset,
 	.set_mode = fw1x_set_mode,
 	.get_mode = fw1x_get_mode,
 	.get_stats = fw1x_get_stats,
-	.led_control = NULL
 };
 
 static struct aq_firmware_ops aq_fw2x_ops = {
@@ -1078,7 +1050,6 @@ static struct aq_firmware_ops aq_fw2x_ops = {
 	.set_mode = fw2x_set_mode,
 	.get_mode = fw2x_get_mode,
 	.get_stats = fw2x_get_stats,
-	.led_control = fw2x_led_control
 };
 
 CFATTACH_DECL3_NEW(aq, sizeof(struct aq_softc),
@@ -2390,21 +2361,6 @@ fw2x_get_stats(struct aq_softc *sc, aq_hw_stats_s_t *stats)
 	stats->dpc = AQ_READ_REG(sc, RX_DMA_DROP_PKT_CNT_ADR);
 	stats->cprc = AQ_READ_REG(sc, RX_DMA_COALESCED_PKT_CNT_ADR);
 
-	return 0;
-}
-
-static int
-fw2x_led_control(struct aq_softc *sc, uint32_t onoff)
-{
-	if (sc->sc_fw_version >= FW2X_FW_MIN_VER_LED) {
-#if 0
-		AQ_WRITE_REG(sc, FW2X_MPI_LED_ADDR, onoff ?
-		    (FW2X_LED_BLINK0 | FW2X_LED_BLINK1 | FW2X_LED_BLINK2) :
-		    (FW2X_LED_DEFAULT));
-#else
-		AQ_WRITE_REG(sc, FW2X_MPI_LED_ADDR, onoff);
-#endif
-	}
 	return 0;
 }
 
@@ -3767,20 +3723,6 @@ aq_rx_intr(struct aq_rxring *rxring)
 #ifdef XXX_DUMP_RX_MBUF
 		hexdump(printf, "mbuf", m->m_data, m->m_len);	// dump this mbuf
 #endif
-#if 1
-		//LED DEBUG
-		{
-			uint32_t v32 = 0;
-			unsigned char *p = mtod(m, unsigned char *);
-			if (p[12] == 0xff && p[13] == 0xff) {
-				v32 = ((p[2] << 24) | (p[3] << 16) | (p[4] << 8) | p[5]);
-				if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->led_control != NULL) {
-					printf("LED = %08x\n", v32);
-					sc->sc_fw_ops->led_control(sc, v32);
-				}
-			}
-		}
-#endif
 
 		if (m0 == NULL) {
 			m0 = m;
@@ -3834,22 +3776,6 @@ aq_ifflags_cb(struct ethercom *ec)
 
 	if ((iffchange & IFF_PROMISC) != 0)
 		error = aq_set_filter(sc);
-
-
-	if ((iffchange & IFF_LINK0) != 0) {
-		if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->led_control != NULL) {
-			uint32_t led = 0;
-			if (ifp->if_flags & IFF_LINK0)
-				led |= 0x0002;
-			if (ifp->if_flags & IFF_LINK1)
-				led |= 0x0008;
-			if (ifp->if_flags & IFF_LINK2)
-				led |= 0x0020;
-
-			sc->sc_fw_ops->led_control(sc, led);
-		}
-	}
-
 
 	sc->sc_if_flags = ifp->if_flags;
 	return error;
