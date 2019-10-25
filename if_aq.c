@@ -44,6 +44,7 @@
 //#define XXX_DUMP_RX_COUNTER
 //#define XXX_DUMP_RX_MBUF
 //#define XXX_DUMP_MACTABLE
+//#ifdef XXX_DUMP_RING
 
 //
 // terminology
@@ -995,10 +996,6 @@ static int aq_ioctl(struct ifnet *, unsigned long, void *);
 
 static int aq_txrx_rings_alloc(struct aq_softc *);
 static void aq_txrx_rings_free(struct aq_softc *);
-static int aq_txring_alloc(struct aq_softc *, struct aq_txring *);
-static void aq_txring_free(struct aq_softc *, struct aq_txring *);
-static int aq_rxring_alloc(struct aq_softc *, struct aq_rxring *);
-static void aq_rxring_free(struct aq_softc *, struct aq_rxring *);
 
 static void aq_initmedia(struct aq_softc *);
 static int aq_mediachange(struct ifnet *);
@@ -1016,11 +1013,11 @@ static int aq_set_linkmode(struct aq_softc *, aq_link_speed_t, aq_link_fc_t, aq_
 static int aq_get_linkmode(struct aq_softc *, aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
 
 static int aq_fw_reset(struct aq_softc *);
-static int aq_fw_ops_init(struct aq_softc *);
-static int aq_hw_chip_features_init(struct aq_softc *);
+static int aq_fw_version_init(struct aq_softc *);
 static int aq_hw_init(struct aq_softc *);
 static int aq_hw_init_ucp(struct aq_softc *);
 static int aq_hw_reset(struct aq_softc *);
+static int aq_fw_downld_dwords(struct aq_softc *, uint32_t, uint32_t *, uint32_t);
 static int aq_get_mac_addr(struct aq_softc *);
 static void aq_init_rsstable(struct aq_softc *);
 
@@ -1042,14 +1039,14 @@ static struct aq_firmware_ops aq_fw1x_ops = {
 	.reset = fw1x_reset,
 	.set_mode = fw1x_set_mode,
 	.get_mode = fw1x_get_mode,
-	.get_stats = fw1x_get_stats,
+	.get_stats = fw1x_get_stats
 };
 
 static struct aq_firmware_ops aq_fw2x_ops = {
 	.reset = fw2x_reset,
 	.set_mode = fw2x_set_mode,
 	.get_mode = fw2x_get_mode,
-	.get_stats = fw2x_get_stats,
+	.get_stats = fw2x_get_stats
 };
 
 CFATTACH_DECL3_NEW(aq, sizeof(struct aq_softc),
@@ -1221,11 +1218,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	if (error != 0)
 		goto attach_failure;
 
-	error = aq_hw_chip_features_init(sc);
-	if (error != 0)
-		goto attach_failure;
-
-	error = aq_fw_ops_init(sc);
+	error = aq_fw_version_init(sc);
 	if (error != 0)
 		goto attach_failure;
 
@@ -1330,386 +1323,6 @@ aq_detach(device_t self, int flags __unused)
 	mutex_destroy(&sc->sc_mutex);
 
 	return 0;
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-static int
-aq_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
-    uint32_t cnt)
-{
-	uint32_t v;
-	int error = 0;
-
-	WAIT_FOR(AQ_READ_REG(sc, HW_ATL_GLB_CPU_SEM_ADR(HW_ATL_FW_SM_RAM)) == 1,
-	    1, 10000, &error);
-	if (error != 0) {
-		AQ_WRITE_REG(sc, HW_ATL_GLB_CPU_SEM_ADR(HW_ATL_FW_SM_RAM), 1);
-		v = AQ_READ_REG(sc, HW_ATL_GLB_CPU_SEM_ADR(HW_ATL_FW_SM_RAM));
-		if (v == 0) {
-			device_printf(sc->sc_dev,
-			    "%s:%d: timeout\n", __func__, __LINE__);
-			return ETIMEDOUT;
-		}
-	}
-
-	AQ_WRITE_REG(sc, HW_ATL_MIF_ADDR, addr);
-
-	error = 0;
-	for (; cnt > 0 && error == 0; cnt--) {
-		/* execute mailbox interface */
-		AQ_WRITE_REG_BIT(sc, HW_ATL_MIF_CMD, HW_ATL_MIF_CMD_EXECUTE, 1);
-		if (sc->sc_features & FEATURES_REV_B1) {
-			WAIT_FOR(
-			    AQ_READ_REG(sc, HW_ATL_MIF_ADDR) != addr,
-			    1, 1000, &error);
-		} else {
-			WAIT_FOR(
-			    (AQ_READ_REG(sc, HW_ATL_MIF_CMD) &
-			    HW_ATL_MIF_CMD_BUSY) == 0,
-			    1, 1000, &error);
-		}
-		*p++ = AQ_READ_REG(sc, HW_ATL_MIF_VAL);
-		addr += sizeof(uint32_t);
-	}
-	AQ_WRITE_REG(sc, HW_ATL_GLB_CPU_SEM_ADR(HW_ATL_FW_SM_RAM), 1);
-
-	if (error != 0)
-		device_printf(sc->sc_dev,
-		    "%s:%d: timeout\n", __func__, __LINE__);
-
-	return error;
-}
-
-static int
-wait_init_mac_firmware(struct aq_softc *sc)
-{
-	int i, error = EBUSY;
-#define MAC_FW_START_TIMEOUT_MS	10000
-	for (i = 0; i < MAC_FW_START_TIMEOUT_MS; i++) {
-		sc->sc_fw_version = AQ_READ_REG(sc, HW_ATL_MPI_FW_VERSION);
-		if (sc->sc_fw_version != 0) {
-			error = 0;
-			break;
-		}
-		delay(1000);
-	}
-	return error;
-}
-
-/* read my mac address */
-static int
-aq_get_mac_addr(struct aq_softc *sc)
-{
-	uint32_t mac_addr[2];
-	uint32_t efuse_shadow_addr;
-	int err;
-
-	efuse_shadow_addr = 0;
-	if (FW_VERSION_MAJOR(sc) >= 2)
-		efuse_shadow_addr = AQ_READ_REG(sc, HW_ATL_FW2X_MPI_EFUSE_ADDR);
-	else
-		efuse_shadow_addr = AQ_READ_REG(sc, HW_ATL_FW1X_MPI_EFUSE_ADDR);
-
-	if (efuse_shadow_addr == 0) {
-		aprint_error_dev(sc->sc_dev, "cannot get efuse addr\n");
-		return ENXIO;
-	}
-
-	memset(mac_addr, 0, sizeof(mac_addr));
-	err = aq_fw_downld_dwords(sc, efuse_shadow_addr + (40 * 4),
-	    mac_addr, __arraycount(mac_addr));
-	if (err < 0)
-		return err;
-
-	if (mac_addr[0] == 0 && mac_addr[1] == 0) {
-		aprint_error_dev(sc->sc_dev, "mac address not found\n");
-		return ENXIO;
-	}
-
-	mac_addr[0] = bswap32(mac_addr[0]);
-	mac_addr[1] = bswap32(mac_addr[1]);
-
-	memcpy(sc->sc_enaddr.ether_addr_octet,
-	    (uint8_t *)mac_addr, ETHER_ADDR_LEN);
-	aprint_normal_dev(sc->sc_dev, "Etheraddr: %s\n",
-	    ether_sprintf(sc->sc_enaddr.ether_addr_octet));
-
-	return 0;
-}
-
-#ifdef XXX_DUMP_MACTABLE
-static void
-aq_dump_mactable(struct aq_softc *sc)
-{
-	int i;
-	uint32_t h, l;
-
-	for (i = 0; i <= AQ_HW_MAC_MAX; i++) {
-		l = AQ_READ_REG(sc, RPFL2UC_DAFLSW_ADR(i));
-		h = AQ_READ_REG(sc, RPFL2UC_DAFMSW_ADR(i));
-		printf("MAC TABLE[%d] %02x:%02x:%02x:%02x:%02x:%02x enable=%d, actf=%ld\n",
-		    i,
-		    (h >> 8) & 0xff,
-		    h & 0xff,
-		    (l >> 24) & 0xff,
-		    (l >> 16) & 0xff,
-		    (l >> 8) & 0xff,
-		    l & 0xff,
-		    (h & RPFL2UC_DAFMSW_EN) ? 1 : 0,
-		    AQ_READ_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(i), RPFL2UC_DAFMSW_ACTF));
-	}
-}
-#endif
-
-/* set multicast filter. index 0 for own address */
-static int
-aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
-{
-	uint32_t h, l;
-
-	if (index > AQ_HW_MAC_MAX)
-		return EINVAL;
-
-	if (enaddr == NULL) {
-		/* disable */
-		AQ_WRITE_REG_BIT(sc,
-		    RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_EN, 0);
-		return 0;
-	}
-
-	h = (enaddr[0] << 8) |
-	    (enaddr[1]);
-	l = (enaddr[2] << 24) |
-	    (enaddr[3] << 16) |
-	    (enaddr[4] << 8) |
-	    (enaddr[5]);
-
-	/* disable, set, and enable */
-	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_EN, 0);
-	AQ_WRITE_REG(sc, RPFL2UC_DAFLSW_ADR(index), l);
-	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_MACADDR_HI, h);
-	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_ACTF, 1);
-	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_EN, 1);
-
-	return 0;
-}
-
-static int
-aq_set_filter(struct aq_softc *sc)
-{
-	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	struct ethercom *ec = &sc->sc_ethercom;
-	struct ether_multi *enm;
-	struct ether_multistep step;
-	int idx, error = 0;
-
-	if (ifp->if_flags & IFF_PROMISC) {
-		AQ_WRITE_REG_BIT(sc, RPFL2BC_EN_ADR, RPFL2BC_PROMISC_MODE,
-		    (ifp->if_flags & IFF_PROMISC) ? 1 : 0);
-		ec->ec_flags |= ETHER_F_ALLMULTI;
-		goto done;
-	}
-
-	/* clear all table */
-	for (idx = AQ_HW_MAC_MIN; idx <= AQ_HW_MAC_MAX; idx++)
-		aq_set_mac_addr(sc, idx, NULL);
-
-	/* don't accept all multicast */
-	AQ_WRITE_REG_BIT(sc, RPF_MCAST_FILTER_MASK_REG,
-	    RPF_MCAST_FILTER_MASK_ALLMULTI, 0);
-	AQ_WRITE_REG_BIT(sc, RPF_MCAST_FILTER_REG(0),
-	    RPF_MCAST_FILTER_ENABLE, 0);
-
-	idx = AQ_HW_MAC_MIN;
-	ETHER_LOCK(ec);
-	ETHER_FIRST_MULTI(step, ec, enm);
-	while (enm != NULL) {
-		if ((idx > AQ_HW_MAC_MAX) ||
-		    memcmp(enm->enm_addrlo, enm->enm_addrhi, ETHER_ADDR_LEN)) {
-			/*
-			 * too many filters.
-			 * fallback to accept all multicast addresses.
-			 */
-			AQ_WRITE_REG_BIT(sc, RPF_MCAST_FILTER_MASK_REG,
-			    RPF_MCAST_FILTER_MASK_ALLMULTI, 1);
-			AQ_WRITE_REG_BIT(sc, RPF_MCAST_FILTER_REG(0),
-			    RPF_MCAST_FILTER_ENABLE, 1);
-			ec->ec_flags |= ETHER_F_ALLMULTI;
-			ETHER_UNLOCK(ec);
-			goto done;
-		}
-
-		/* add a filter */
-		aq_set_mac_addr(sc, idx++, enm->enm_addrlo);
-
-		ETHER_NEXT_MULTI(step, enm);
-	}
-	ec->ec_flags &= ~ETHER_F_ALLMULTI;
-	ETHER_UNLOCK(ec);
-
- done:
-	return error;
-}
-
-
-static void
-aq_mediastatus_update(struct aq_softc *sc)
-{
-	sc->sc_media_active = 0;
-
-	if (sc->sc_link_fc & AQ_FC_RX)
-		sc->sc_media_active |= IFM_ETH_RXPAUSE;
-	if (sc->sc_link_fc & AQ_FC_TX)
-		sc->sc_media_active |= IFM_ETH_TXPAUSE;
-
-	switch (sc->sc_link_rate) {
-	case AQ_LINK_100M:
-		sc->sc_media_active |= IFM_100_TX | IFM_FDX;
-		break;
-	case AQ_LINK_1G:
-		sc->sc_media_active |= IFM_1000_T | IFM_FDX;
-		break;
-	case AQ_LINK_2G5:
-		sc->sc_media_active |= IFM_2500_T | IFM_FDX;
-		break;
-	case AQ_LINK_5G:
-		sc->sc_media_active |= IFM_5000_T | IFM_FDX;
-		break;
-	case AQ_LINK_10G:
-		sc->sc_media_active |= IFM_10G_T | IFM_FDX;
-		break;
-	default:
-		sc->sc_media_active |= IFM_NONE;
-		break;
-	}
-}
-
-static void
-aq_mediastatus(struct ifnet *ifp, struct ifmediareq *ifmr)
-{
-	struct aq_softc *sc = ifp->if_softc;
-
-	ifmr->ifm_active = IFM_ETHER;
-	ifmr->ifm_status = IFM_AVALID;
-
-	if (sc->sc_link_rate != AQ_LINK_NONE)
-		ifmr->ifm_status |= IFM_ACTIVE;
-
-	ifmr->ifm_active |= sc->sc_media_active;
-}
-
-static int
-aq_mediachange(struct ifnet *ifp)
-{
-	struct aq_softc *sc = ifp->if_softc;
-	aq_link_speed_t rate = AQ_LINK_NONE;
-	aq_link_fc_t fc = AQ_FC_NONE;
-	aq_link_eee_t eee = AQ_EEE_DISABLE;
-
-	if (IFM_TYPE(sc->sc_media.ifm_media) != IFM_ETHER)
-		return EINVAL;
-
-	switch (IFM_SUBTYPE(sc->sc_media.ifm_media)) {
-	case IFM_AUTO:
-		rate = AQ_LINK_AUTO;
-		break;
-	case IFM_NONE:
-		rate = AQ_LINK_NONE;
-		break;
-	case IFM_100_TX:
-		rate = AQ_LINK_100M;
-		break;
-	case IFM_1000_T:
-		rate = AQ_LINK_1G;
-		break;
-	case IFM_2500_T:
-		rate = AQ_LINK_2G5;
-		break;
-	case IFM_5000_T:
-		rate = AQ_LINK_5G;
-		break;
-	case IFM_10G_T:
-		rate = AQ_LINK_10G;
-		break;
-	default:
-		device_printf(sc->sc_dev, "unknown media: 0x%X\n", IFM_SUBTYPE(sc->sc_media.ifm_media));
-		return ENODEV;
-	}
-
-	if (sc->sc_media.ifm_media & IFM_FLOW)
-		fc = AQ_FC_ALL;
-
-	/* XXX: todo EEE */
-
-	/* re-initialize hardware with new parameters */
-	aq_set_linkmode(sc, rate, fc, eee);
-
-	return 0;
-}
-
-static void
-aq_initmedia(struct aq_softc *sc)
-{
-#define IFMEDIA_ETHER_ADD(sc, media)	\
-	ifmedia_add(&(sc)->sc_media, IFM_ETHER | media, 0, NULL);
-
-	IFMEDIA_ETHER_ADD(sc, IFM_NONE);
-	if (sc->sc_available_rates & AQ_LINK_100M) {
-		IFMEDIA_ETHER_ADD(sc, IFM_100_TX);
-		IFMEDIA_ETHER_ADD(sc, IFM_100_TX | IFM_FLOW);
-	}
-	if (sc->sc_available_rates & AQ_LINK_1G) {
-		IFMEDIA_ETHER_ADD(sc, IFM_1000_T);
-		IFMEDIA_ETHER_ADD(sc, IFM_1000_T | IFM_FLOW);
-	}
-	if (sc->sc_available_rates & AQ_LINK_2G5) {
-		IFMEDIA_ETHER_ADD(sc, IFM_2500_T);
-		IFMEDIA_ETHER_ADD(sc, IFM_2500_T | IFM_FLOW);
-	}
-	if (sc->sc_available_rates & AQ_LINK_5G) {
-		IFMEDIA_ETHER_ADD(sc, IFM_5000_T);
-		IFMEDIA_ETHER_ADD(sc, IFM_5000_T | IFM_FLOW);
-	}
-	if (sc->sc_available_rates & AQ_LINK_10G) {
-		IFMEDIA_ETHER_ADD(sc, IFM_10G_T);
-		IFMEDIA_ETHER_ADD(sc, IFM_10G_T | IFM_FLOW);
-	}
-	IFMEDIA_ETHER_ADD(sc, IFM_AUTO);
-	IFMEDIA_ETHER_ADD(sc, IFM_AUTO | IFM_FLOW);
-
-	/* default media */
-#if 0
-	/* default: auto with flowcontrol */
-	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO | IFM_FLOW);
-	aq_set_linkmode(sc, AQ_LINK_AUTO, AQ_FC_ALL, AQ_EEE_DISABLE);
-#else
-	/* default: auto without flowcontrol */
-	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO);
-	aq_set_linkmode(sc, AQ_LINK_AUTO, AQ_FC_NONE, AQ_EEE_DISABLE);
-#endif
 }
 
 static void
@@ -1881,6 +1494,22 @@ mac_soft_reset(struct aq_softc *sc, aq_fw_bootloader_mode_t *mode)
 }
 
 static int
+aq_fw_read_version(struct aq_softc *sc)
+{
+	int i, error = EBUSY;
+#define MAC_FW_START_TIMEOUT_MS	10000
+	for (i = 0; i < MAC_FW_START_TIMEOUT_MS; i++) {
+		sc->sc_fw_version = AQ_READ_REG(sc, HW_ATL_MPI_FW_VERSION);
+		if (sc->sc_fw_version != 0) {
+			error = 0;
+			break;
+		}
+		delay(1000);
+	}
+	return error;
+}
+
+static int
 aq_fw_reset(struct aq_softc *sc)
 {
 	uint32_t ver, v, bootExitCode;
@@ -1908,7 +1537,7 @@ aq_fw_reset(struct aq_softc *sc)
 	 * 2) Driver may skip reset sequence and save time.
 	 */
 	if (sc->sc_fast_start_enabled && (ver != 0)) {
-		error = wait_init_mac_firmware(sc);
+		error = aq_fw_read_version(sc);
 		/* Skip reset as it just completed */
 		if (error == 0)
 			return 0;
@@ -1926,12 +1555,12 @@ aq_fw_reset(struct aq_softc *sc)
 		aprint_debug_dev(sc->sc_dev,
 		    "FLB> F/W successfully loaded from flash.\n");
 		sc->sc_flash_present = true;
-		return wait_init_mac_firmware(sc);
+		return aq_fw_read_version(sc);
 	case FW_BOOT_MODE_RBL_FLASH:
 		aprint_debug_dev(sc->sc_dev,
 		    "RBL> F/W loaded from flash. Host Bootload disabled.\n");
 		sc->sc_flash_present = true;
-		return wait_init_mac_firmware(sc);
+		return aq_fw_read_version(sc);
 	case FW_BOOT_MODE_UNKNOWN:
 		aprint_error_dev(sc->sc_dev,
 		    "F/W bootload error: unknown bootloader type\n");
@@ -1975,9 +1604,10 @@ aq_hw_reset(struct aq_softc *sc)
 		return error;
 	}
 
-	error = 0;
 	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->reset != NULL)
 		error = sc->sc_fw_ops->reset(sc);
+	else
+		error = ENOTSUP;
 
 	return error;
 }
@@ -2027,12 +1657,23 @@ aq_hw_init_ucp(struct aq_softc *sc)
 }
 
 static int
-aq_hw_chip_features_init(struct aq_softc *sc)
+aq_fw_version_init(struct aq_softc *sc)
 {
 	int error = 0;
-	char fw_vers[sizeof("FW version xxxxx.xxxxx.xxxxx")];
+	char fw_vers[sizeof("F/W version xxxxx.xxxxx.xxxxx")];
 
-	snprintf(fw_vers, sizeof(fw_vers), "FW version %d.%d.%d",
+	if (FW_VERSION_MAJOR(sc) == 1) {
+		sc->sc_fw_ops = &aq_fw1x_ops;
+	} else if (FW_VERSION_MAJOR(sc) >= 2) {
+		sc->sc_fw_ops = &aq_fw2x_ops;
+	} else {
+		aprint_error_dev(sc->sc_dev,
+		    "invalid F/W version %d.%d.%d\n",
+		    FW_VERSION_MAJOR(sc), FW_VERSION_MINOR(sc),
+		    FW_VERSION_BUILD(sc));
+		return ENOTSUP;
+	}
+	snprintf(fw_vers, sizeof(fw_vers), "F/W version %d.%d.%d",
 	    FW_VERSION_MAJOR(sc), FW_VERSION_MINOR(sc), FW_VERSION_BUILD(sc));
 
 	/* detect revision */
@@ -2065,23 +1706,6 @@ aq_hw_chip_features_init(struct aq_softc *sc)
 		break;
 	}
 	return error;
-}
-
-static int
-aq_fw_ops_init(struct aq_softc *sc)
-{
-	if (FW_VERSION_MAJOR(sc) == 1) {
-		sc->sc_fw_ops = &aq_fw1x_ops;
-	} else if (FW_VERSION_MAJOR(sc) >= 2) {
-		sc->sc_fw_ops = &aq_fw2x_ops;
-	} else {
-		aprint_error_dev(sc->sc_dev,
-		    "invalid F/W version %d.%d.%d\n",
-		    FW_VERSION_MAJOR(sc), FW_VERSION_MINOR(sc),
-		    FW_VERSION_BUILD(sc));
-		return ENOTSUP;
-	}
-	return 0;
 }
 
 static int
@@ -2125,41 +1749,6 @@ fw1x_reset(struct aq_softc *sc)
 	aprint_error_dev(sc->sc_dev,
 	    "F/W 1.x reset finalize timeout\n");
 	return EBUSY;
-}
-
-static int
-aq_set_linkmode(struct aq_softc *sc, aq_link_speed_t speed, aq_link_fc_t fc, aq_link_eee_t eee)
-{
-	int error;
-
-	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->set_mode != NULL) {
-		error = sc->sc_fw_ops->set_mode(sc, MPI_INIT, speed, fc, eee);
-	} else {
-		device_printf(sc->sc_dev, "%s: not supported by F/W\n", __func__);
-		error = ENOTSUP;
-	}
-	return error;
-}
-
-static int
-aq_get_linkmode(struct aq_softc *sc, aq_link_speed_t *speed, aq_link_fc_t *fc, aq_link_eee_t *eee)
-{
-	aq_hw_fw_mpi_state_e_t mode;
-	int error = 0;
-
-	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_mode != NULL) {
-		error = sc->sc_fw_ops->get_mode(sc,
-		    &mode, speed, fc, eee);
-	} else {
-		device_printf(sc->sc_dev, "%s: not supported by F/W\n", __func__);
-		return ENOTSUP;
-	}
-	if (error != 0)
-		return error;
-	if (mode != MPI_INIT)
-		return ENXIO;
-
-	return 0;
 }
 
 static int
@@ -2360,6 +1949,356 @@ fw2x_get_stats(struct aq_softc *sc, aq_hw_stats_s_t *stats)
 	}
 	stats->dpc = AQ_READ_REG(sc, RX_DMA_DROP_PKT_CNT_ADR);
 	stats->cprc = AQ_READ_REG(sc, RX_DMA_COALESCED_PKT_CNT_ADR);
+
+	return 0;
+}
+
+static int
+aq_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
+    uint32_t cnt)
+{
+	uint32_t v;
+	int error = 0;
+
+	WAIT_FOR(AQ_READ_REG(sc, HW_ATL_GLB_CPU_SEM_ADR(HW_ATL_FW_SM_RAM)) == 1,
+	    1, 10000, &error);
+	if (error != 0) {
+		AQ_WRITE_REG(sc, HW_ATL_GLB_CPU_SEM_ADR(HW_ATL_FW_SM_RAM), 1);
+		v = AQ_READ_REG(sc, HW_ATL_GLB_CPU_SEM_ADR(HW_ATL_FW_SM_RAM));
+		if (v == 0) {
+			device_printf(sc->sc_dev,
+			    "%s:%d: timeout\n", __func__, __LINE__);
+			return ETIMEDOUT;
+		}
+	}
+
+	AQ_WRITE_REG(sc, HW_ATL_MIF_ADDR, addr);
+
+	error = 0;
+	for (; cnt > 0 && error == 0; cnt--) {
+		/* execute mailbox interface */
+		AQ_WRITE_REG_BIT(sc, HW_ATL_MIF_CMD, HW_ATL_MIF_CMD_EXECUTE, 1);
+		if (sc->sc_features & FEATURES_REV_B1) {
+			WAIT_FOR(
+			    AQ_READ_REG(sc, HW_ATL_MIF_ADDR) != addr,
+			    1, 1000, &error);
+		} else {
+			WAIT_FOR(
+			    (AQ_READ_REG(sc, HW_ATL_MIF_CMD) &
+			    HW_ATL_MIF_CMD_BUSY) == 0,
+			    1, 1000, &error);
+		}
+		*p++ = AQ_READ_REG(sc, HW_ATL_MIF_VAL);
+		addr += sizeof(uint32_t);
+	}
+	AQ_WRITE_REG(sc, HW_ATL_GLB_CPU_SEM_ADR(HW_ATL_FW_SM_RAM), 1);
+
+	if (error != 0)
+		device_printf(sc->sc_dev,
+		    "%s:%d: timeout\n", __func__, __LINE__);
+
+	return error;
+}
+
+/* read my mac address */
+static int
+aq_get_mac_addr(struct aq_softc *sc)
+{
+	uint32_t mac_addr[2];
+	uint32_t efuse_shadow_addr;
+	int err;
+
+	efuse_shadow_addr = 0;
+	if (FW_VERSION_MAJOR(sc) >= 2)
+		efuse_shadow_addr = AQ_READ_REG(sc, HW_ATL_FW2X_MPI_EFUSE_ADDR);
+	else
+		efuse_shadow_addr = AQ_READ_REG(sc, HW_ATL_FW1X_MPI_EFUSE_ADDR);
+
+	if (efuse_shadow_addr == 0) {
+		aprint_error_dev(sc->sc_dev, "cannot get efuse addr\n");
+		return ENXIO;
+	}
+
+	memset(mac_addr, 0, sizeof(mac_addr));
+	err = aq_fw_downld_dwords(sc, efuse_shadow_addr + (40 * 4),
+	    mac_addr, __arraycount(mac_addr));
+	if (err < 0)
+		return err;
+
+	if (mac_addr[0] == 0 && mac_addr[1] == 0) {
+		aprint_error_dev(sc->sc_dev, "mac address not found\n");
+		return ENXIO;
+	}
+
+	mac_addr[0] = bswap32(mac_addr[0]);
+	mac_addr[1] = bswap32(mac_addr[1]);
+
+	memcpy(sc->sc_enaddr.ether_addr_octet,
+	    (uint8_t *)mac_addr, ETHER_ADDR_LEN);
+	aprint_normal_dev(sc->sc_dev, "Etheraddr: %s\n",
+	    ether_sprintf(sc->sc_enaddr.ether_addr_octet));
+
+	return 0;
+}
+
+/* set multicast filter. index 0 for own address */
+static int
+aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
+{
+	uint32_t h, l;
+
+	if (index > AQ_HW_MAC_MAX)
+		return EINVAL;
+
+	if (enaddr == NULL) {
+		/* disable */
+		AQ_WRITE_REG_BIT(sc,
+		    RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_EN, 0);
+		return 0;
+	}
+
+	h = (enaddr[0] << 8) |
+	    (enaddr[1]);
+	l = (enaddr[2] << 24) |
+	    (enaddr[3] << 16) |
+	    (enaddr[4] << 8) |
+	    (enaddr[5]);
+
+	/* disable, set, and enable */
+	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_EN, 0);
+	AQ_WRITE_REG(sc, RPFL2UC_DAFLSW_ADR(index), l);
+	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_MACADDR_HI, h);
+	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_ACTF, 1);
+	AQ_WRITE_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(index), RPFL2UC_DAFMSW_EN, 1);
+
+	return 0;
+}
+
+static int
+aq_set_filter(struct aq_softc *sc)
+{
+	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	struct ethercom *ec = &sc->sc_ethercom;
+	struct ether_multi *enm;
+	struct ether_multistep step;
+	int idx, error = 0;
+
+	if (ifp->if_flags & IFF_PROMISC) {
+		AQ_WRITE_REG_BIT(sc, RPFL2BC_EN_ADR, RPFL2BC_PROMISC_MODE,
+		    (ifp->if_flags & IFF_PROMISC) ? 1 : 0);
+		ec->ec_flags |= ETHER_F_ALLMULTI;
+		goto done;
+	}
+
+	/* clear all table */
+	for (idx = AQ_HW_MAC_MIN; idx <= AQ_HW_MAC_MAX; idx++)
+		aq_set_mac_addr(sc, idx, NULL);
+
+	/* don't accept all multicast */
+	AQ_WRITE_REG_BIT(sc, RPF_MCAST_FILTER_MASK_REG,
+	    RPF_MCAST_FILTER_MASK_ALLMULTI, 0);
+	AQ_WRITE_REG_BIT(sc, RPF_MCAST_FILTER_REG(0),
+	    RPF_MCAST_FILTER_ENABLE, 0);
+
+	idx = AQ_HW_MAC_MIN;
+	ETHER_LOCK(ec);
+	ETHER_FIRST_MULTI(step, ec, enm);
+	while (enm != NULL) {
+		if ((idx > AQ_HW_MAC_MAX) ||
+		    memcmp(enm->enm_addrlo, enm->enm_addrhi, ETHER_ADDR_LEN)) {
+			/*
+			 * too many filters.
+			 * fallback to accept all multicast addresses.
+			 */
+			AQ_WRITE_REG_BIT(sc, RPF_MCAST_FILTER_MASK_REG,
+			    RPF_MCAST_FILTER_MASK_ALLMULTI, 1);
+			AQ_WRITE_REG_BIT(sc, RPF_MCAST_FILTER_REG(0),
+			    RPF_MCAST_FILTER_ENABLE, 1);
+			ec->ec_flags |= ETHER_F_ALLMULTI;
+			ETHER_UNLOCK(ec);
+			goto done;
+		}
+
+		/* add a filter */
+		aq_set_mac_addr(sc, idx++, enm->enm_addrlo);
+
+		ETHER_NEXT_MULTI(step, enm);
+	}
+	ec->ec_flags &= ~ETHER_F_ALLMULTI;
+	ETHER_UNLOCK(ec);
+
+ done:
+	return error;
+}
+
+static void
+aq_mediastatus_update(struct aq_softc *sc)
+{
+	sc->sc_media_active = 0;
+
+	if (sc->sc_link_fc & AQ_FC_RX)
+		sc->sc_media_active |= IFM_ETH_RXPAUSE;
+	if (sc->sc_link_fc & AQ_FC_TX)
+		sc->sc_media_active |= IFM_ETH_TXPAUSE;
+
+	switch (sc->sc_link_rate) {
+	case AQ_LINK_100M:
+		sc->sc_media_active |= IFM_100_TX | IFM_FDX;
+		break;
+	case AQ_LINK_1G:
+		sc->sc_media_active |= IFM_1000_T | IFM_FDX;
+		break;
+	case AQ_LINK_2G5:
+		sc->sc_media_active |= IFM_2500_T | IFM_FDX;
+		break;
+	case AQ_LINK_5G:
+		sc->sc_media_active |= IFM_5000_T | IFM_FDX;
+		break;
+	case AQ_LINK_10G:
+		sc->sc_media_active |= IFM_10G_T | IFM_FDX;
+		break;
+	default:
+		sc->sc_media_active |= IFM_NONE;
+		break;
+	}
+}
+
+static void
+aq_mediastatus(struct ifnet *ifp, struct ifmediareq *ifmr)
+{
+	struct aq_softc *sc = ifp->if_softc;
+
+	ifmr->ifm_active = IFM_ETHER;
+	ifmr->ifm_status = IFM_AVALID;
+
+	if (sc->sc_link_rate != AQ_LINK_NONE)
+		ifmr->ifm_status |= IFM_ACTIVE;
+
+	ifmr->ifm_active |= sc->sc_media_active;
+}
+
+static int
+aq_mediachange(struct ifnet *ifp)
+{
+	struct aq_softc *sc = ifp->if_softc;
+	aq_link_speed_t rate = AQ_LINK_NONE;
+	aq_link_fc_t fc = AQ_FC_NONE;
+	aq_link_eee_t eee = AQ_EEE_DISABLE;
+
+	if (IFM_TYPE(sc->sc_media.ifm_media) != IFM_ETHER)
+		return EINVAL;
+
+	switch (IFM_SUBTYPE(sc->sc_media.ifm_media)) {
+	case IFM_AUTO:
+		rate = AQ_LINK_AUTO;
+		break;
+	case IFM_NONE:
+		rate = AQ_LINK_NONE;
+		break;
+	case IFM_100_TX:
+		rate = AQ_LINK_100M;
+		break;
+	case IFM_1000_T:
+		rate = AQ_LINK_1G;
+		break;
+	case IFM_2500_T:
+		rate = AQ_LINK_2G5;
+		break;
+	case IFM_5000_T:
+		rate = AQ_LINK_5G;
+		break;
+	case IFM_10G_T:
+		rate = AQ_LINK_10G;
+		break;
+	default:
+		device_printf(sc->sc_dev, "unknown media: 0x%X\n", IFM_SUBTYPE(sc->sc_media.ifm_media));
+		return ENODEV;
+	}
+
+	if (sc->sc_media.ifm_media & IFM_FLOW)
+		fc = AQ_FC_ALL;
+
+	/* XXX: todo EEE */
+
+	/* re-initialize hardware with new parameters */
+	aq_set_linkmode(sc, rate, fc, eee);
+
+	return 0;
+}
+
+static void
+aq_initmedia(struct aq_softc *sc)
+{
+#define IFMEDIA_ETHER_ADD(sc, media)	\
+	ifmedia_add(&(sc)->sc_media, IFM_ETHER | media, 0, NULL);
+
+	IFMEDIA_ETHER_ADD(sc, IFM_NONE);
+	if (sc->sc_available_rates & AQ_LINK_100M) {
+		IFMEDIA_ETHER_ADD(sc, IFM_100_TX);
+		IFMEDIA_ETHER_ADD(sc, IFM_100_TX | IFM_FLOW);
+	}
+	if (sc->sc_available_rates & AQ_LINK_1G) {
+		IFMEDIA_ETHER_ADD(sc, IFM_1000_T);
+		IFMEDIA_ETHER_ADD(sc, IFM_1000_T | IFM_FLOW);
+	}
+	if (sc->sc_available_rates & AQ_LINK_2G5) {
+		IFMEDIA_ETHER_ADD(sc, IFM_2500_T);
+		IFMEDIA_ETHER_ADD(sc, IFM_2500_T | IFM_FLOW);
+	}
+	if (sc->sc_available_rates & AQ_LINK_5G) {
+		IFMEDIA_ETHER_ADD(sc, IFM_5000_T);
+		IFMEDIA_ETHER_ADD(sc, IFM_5000_T | IFM_FLOW);
+	}
+	if (sc->sc_available_rates & AQ_LINK_10G) {
+		IFMEDIA_ETHER_ADD(sc, IFM_10G_T);
+		IFMEDIA_ETHER_ADD(sc, IFM_10G_T | IFM_FLOW);
+	}
+	IFMEDIA_ETHER_ADD(sc, IFM_AUTO);
+	IFMEDIA_ETHER_ADD(sc, IFM_AUTO | IFM_FLOW);
+
+	/* default media */
+#if 0
+	/* default: auto with flowcontrol */
+	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO | IFM_FLOW);
+	aq_set_linkmode(sc, AQ_LINK_AUTO, AQ_FC_ALL, AQ_EEE_DISABLE);
+#else
+	/* default: auto without flowcontrol */
+	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO);
+	aq_set_linkmode(sc, AQ_LINK_AUTO, AQ_FC_NONE, AQ_EEE_DISABLE);
+#endif
+}
+
+static int
+aq_set_linkmode(struct aq_softc *sc, aq_link_speed_t speed, aq_link_fc_t fc, aq_link_eee_t eee)
+{
+	int error;
+
+	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->set_mode != NULL) {
+		error = sc->sc_fw_ops->set_mode(sc, MPI_INIT, speed, fc, eee);
+	} else {
+		device_printf(sc->sc_dev, "%s: not supported by F/W\n", __func__);
+		error = ENOTSUP;
+	}
+	return error;
+}
+
+static int
+aq_get_linkmode(struct aq_softc *sc, aq_link_speed_t *speed, aq_link_fc_t *fc, aq_link_eee_t *eee)
+{
+	aq_hw_fw_mpi_state_e_t mode;
+	int error = 0;
+
+	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_mode != NULL) {
+		error = sc->sc_fw_ops->get_mode(sc,
+		    &mode, speed, fc, eee);
+	} else {
+		device_printf(sc->sc_dev, "%s: not supported by F/W\n", __func__);
+		return ENOTSUP;
+	}
+	if (error != 0)
+		return error;
+	if (mode != MPI_INIT)
+		return ENXIO;
 
 	return 0;
 }
@@ -2585,7 +2524,6 @@ aq_init_rsstable(struct aq_softc *sc)
 		sc->sc_rss_table[i] = i % sc->sc_rxringnum;
 	}
 }
-
 
 static int
 aq_hw_rss_hash_set(struct aq_softc *sc)
@@ -2829,7 +2767,7 @@ aq_update_link_status(struct aq_softc *sc)
 	return changed;
 }
 
-/* allocate and map one DMA blocks */
+/* allocate and map one DMA block */
 static int
 _alloc_dma(struct aq_softc *sc, bus_size_t size, bus_size_t *sizep,
     void **addrp, bus_dmamap_t *mapp, bus_dma_segment_t *seg)
@@ -2899,7 +2837,6 @@ _free_dma(struct aq_softc *sc, bus_size_t *sizep, void **addrp, bus_dmamap_t *ma
 	}
 }
 
-/* allocate a tx ring */
 static int
 aq_txring_alloc(struct aq_softc *sc, struct aq_txring *txring)
 {
@@ -2965,60 +2902,6 @@ aq_txring_free(struct aq_softc *sc, struct aq_txring *txring)
 	}
 }
 
-static inline void
-aq_rxring_reset_desc(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
-{
-	/* refill rxdesc, and sync */
-	rxring->ring_rxdesc[idx].read.buf_addr = htole64(rxring->ring_mbufs[idx].dmamap->dm_segs[0].ds_addr);
-	rxring->ring_rxdesc[idx].read.hdr_addr = 0;
-	bus_dmamap_sync(sc->sc_dmat, rxring->ring_rxdesc_dmamap,
-	    sizeof(aq_rx_desc_t) * idx, sizeof(aq_rx_desc_t),
-	    BUS_DMASYNC_PREWRITE);
-}
-
-/* allocate mbuf and unload dmamap */
-static int
-aq_rxring_add(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
-{
-	struct mbuf *m;
-	int error;
-
-	MGETHDR(m, M_DONTWAIT, MT_DATA);
-	if (m == NULL)
-		return ENOBUFS;
-
-	MCLGET(m, M_DONTWAIT);
-	if ((m->m_flags & M_EXT) == 0) {
-		m_freem(m);
-		return ENOBUFS;
-	}
-
-	/* if mbuf already exists, unload and free */
-	if (rxring->ring_mbufs[idx].m != NULL) {
-		bus_dmamap_unload(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap);
-		m_freem(rxring->ring_mbufs[idx].m);
-		rxring->ring_mbufs[idx].m = NULL;
-	}
-
-	rxring->ring_mbufs[idx].m = m;
-
-	m->m_len = m->m_pkthdr.len = m->m_ext.ext_size;
-	error = bus_dmamap_load_mbuf(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap,
-	    m, BUS_DMA_NOWAIT);
-	if (error) {
-		device_printf(sc->sc_dev,
-		    "unable to load rx DMA map %d, error = %d\n", idx, error);
-		panic("%s: unable to load rx DMA map. error=%d", __func__, error);
-	}
-	bus_dmamap_sync(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap, 0,
-	    rxring->ring_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_PREREAD);
-
-	aq_rxring_reset_desc(sc, rxring, idx);
-
-	return 0;
-}
-
-/* allocate a rx ring */
 static int
 aq_rxring_alloc(struct aq_softc *sc, struct aq_rxring *rxring)
 {
@@ -3076,7 +2959,6 @@ aq_rxdrain(struct aq_softc *sc, struct aq_rxring *rxring)
 	}
 }
 
-/* free a rx ring */
 static void
 aq_rxring_free(struct aq_softc *sc, struct aq_rxring *rxring)
 {
@@ -3096,6 +2978,58 @@ aq_rxring_free(struct aq_softc *sc, struct aq_rxring *rxring)
 	    &rxring->ring_rxdesc_dmamap, rxring->ring_rxdesc_seg);
 }
 
+static inline void
+aq_rxring_reset_desc(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
+{
+	/* refill rxdesc, and sync */
+	rxring->ring_rxdesc[idx].read.buf_addr = htole64(rxring->ring_mbufs[idx].dmamap->dm_segs[0].ds_addr);
+	rxring->ring_rxdesc[idx].read.hdr_addr = 0;
+	bus_dmamap_sync(sc->sc_dmat, rxring->ring_rxdesc_dmamap,
+	    sizeof(aq_rx_desc_t) * idx, sizeof(aq_rx_desc_t),
+	    BUS_DMASYNC_PREWRITE);
+}
+
+/* allocate mbuf and unload dmamap */
+static int
+aq_rxring_add(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
+{
+	struct mbuf *m;
+	int error;
+
+	MGETHDR(m, M_DONTWAIT, MT_DATA);
+	if (m == NULL)
+		return ENOBUFS;
+
+	MCLGET(m, M_DONTWAIT);
+	if ((m->m_flags & M_EXT) == 0) {
+		m_freem(m);
+		return ENOBUFS;
+	}
+
+	/* if mbuf already exists, unload and free */
+	if (rxring->ring_mbufs[idx].m != NULL) {
+		bus_dmamap_unload(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap);
+		m_freem(rxring->ring_mbufs[idx].m);
+		rxring->ring_mbufs[idx].m = NULL;
+	}
+
+	rxring->ring_mbufs[idx].m = m;
+
+	m->m_len = m->m_pkthdr.len = m->m_ext.ext_size;
+	error = bus_dmamap_load_mbuf(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap,
+	    m, BUS_DMA_NOWAIT);
+	if (error) {
+		device_printf(sc->sc_dev,
+		    "unable to load rx DMA map %d, error = %d\n", idx, error);
+		panic("%s: unable to load rx DMA map. error=%d", __func__, error);
+	}
+	bus_dmamap_sync(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap, 0,
+	    rxring->ring_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_PREREAD);
+
+	aq_rxring_reset_desc(sc, rxring, idx);
+
+	return 0;
+}
 
 static int
 aq_txrx_rings_alloc(struct aq_softc *sc)
@@ -3124,6 +3058,7 @@ aq_txrx_rings_alloc(struct aq_softc *sc)
 	return error;
 }
 
+#ifdef XXX_DUMP_RING
 static void
 dump_txrings(struct aq_softc *sc)
 {
@@ -3178,6 +3113,7 @@ dump_rxrings(struct aq_softc *sc)
 		mutex_exit(&rxring->ring_mutex);
 	}
 }
+#endif /* XXX_DUMP_RING */
 
 static void
 aq_txrx_rings_free(struct aq_softc *sc)
@@ -3206,6 +3142,23 @@ aq_tick(void *arg)
 	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
 }
 #endif
+
+/* interrupt enable/disable */
+static void
+aq_enable_intr(struct aq_softc *sc, bool link, bool txrx)
+{
+	uint32_t imask = 0;
+
+	if (txrx)
+		imask |= __BITS(0, sc->sc_ringnum - 1);
+	if (link)
+		imask |= __BIT(LINKSTAT_IRQ);
+
+	AQ_WRITE_REG(sc, AQ_INTR_MASK, imask);
+	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR, 0xffffffff);	//XXX
+
+	printf("%s:%d: INTR_MASK/INTR_STATUS=%08x/%08x\n", __func__, __LINE__, AQ_READ_REG(sc, AQ_INTR_MASK), AQ_READ_REG(sc, AQ_INTR_STATUS));
+}
 
 static int
 aq_intr(void *arg)
@@ -3271,40 +3224,6 @@ aq_intr(void *arg)
 
 	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR, 0xffffffff);	//XXX
 	return nintr;
-}
-
-/* Interrupt enable / disable */
-static void
-aq_enable_intr(struct aq_softc *sc, bool link, bool txrx)
-{
-	uint32_t imask = 0;
-
-	if (txrx)
-		imask |= __BITS(0, sc->sc_ringnum - 1);
-	if (link)
-		imask |= __BIT(LINKSTAT_IRQ);
-
-	AQ_WRITE_REG(sc, AQ_INTR_MASK, imask);
-	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR, 0xffffffff);	//XXX
-
-	printf("%s:%d: INTR_MASK/INTR_STATUS=%08x/%08x\n", __func__, __LINE__, AQ_READ_REG(sc, AQ_INTR_MASK), AQ_READ_REG(sc, AQ_INTR_STATUS));
-}
-
-static int
-aq_ifmedia_change(struct ifnet * const ifp)
-{
-#ifdef XXX_DUMP_MACTABLE
-	struct aq_softc *sc = ifp->if_softc;
-	aq_dump_mactable(sc);
-#endif
-
-	return aq_mediachange(ifp);
-}
-
-static void
-aq_ifmedia_status(struct ifnet * const ifp, struct ifmediareq *req)
-{
-	aq_mediastatus(ifp, req);
 }
 
 static void
@@ -3762,6 +3681,18 @@ aq_rx_intr(struct aq_rxring *rxring)
 }
 
 static int
+aq_ifmedia_change(struct ifnet * const ifp)
+{
+	return aq_mediachange(ifp);
+}
+
+static void
+aq_ifmedia_status(struct ifnet * const ifp, struct ifmediareq *req)
+{
+	aq_mediastatus(ifp, req);
+}
+
+static int
 aq_ifflags_cb(struct ethercom *ec)
 {
 	struct ifnet *ifp = &ec->ec_if;
@@ -3780,7 +3711,6 @@ aq_ifflags_cb(struct ethercom *ec)
 	sc->sc_if_flags = ifp->if_flags;
 	return error;
 }
-
 
 static int
 aq_init(struct ifnet *ifp)
@@ -3807,11 +3737,13 @@ aq_init(struct ifnet *ifp)
 	}
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_ADR, RPB_RPF_RX_BUF_EN, 1);
 
+#ifdef XXX_DUMP_RING
 	//XXX
 	(void)&dump_txrings;
 	(void)&dump_rxrings;
 //	dump_txrings(sc);
 //	dump_rxrings(sc);
+#endif
 
 
 //	aq_hw_start();
@@ -3968,6 +3900,30 @@ aq_watchdog(struct ifnet *ifp)
 	//XXX
 }
 
+#ifdef XXX_DUMP_MACTABLE
+static void
+aq_dump_mactable(struct aq_softc *sc)
+{
+	int i;
+	uint32_t h, l;
+
+	for (i = 0; i <= AQ_HW_MAC_MAX; i++) {
+		l = AQ_READ_REG(sc, RPFL2UC_DAFLSW_ADR(i));
+		h = AQ_READ_REG(sc, RPFL2UC_DAFMSW_ADR(i));
+		printf("MAC TABLE[%d] %02x:%02x:%02x:%02x:%02x:%02x enable=%d, actf=%ld\n",
+		    i,
+		    (h >> 8) & 0xff,
+		    h & 0xff,
+		    (l >> 24) & 0xff,
+		    (l >> 16) & 0xff,
+		    (l >> 8) & 0xff,
+		    l & 0xff,
+		    (h & RPFL2UC_DAFMSW_EN) ? 1 : 0,
+		    AQ_READ_REG_BIT(sc, RPFL2UC_DAFMSW_ADR(i), RPFL2UC_DAFMSW_ACTF));
+	}
+}
+#endif
+
 static int
 aq_ioctl(struct ifnet *ifp, unsigned long cmd, void *data)
 {
@@ -3993,6 +3949,9 @@ aq_ioctl(struct ifnet *ifp, unsigned long cmd, void *data)
 			 * accordingly.
 			 */
 			error = aq_set_filter(sc);
+#ifdef XXX_DUMP_MACTABLE
+			aq_dump_mactable(sc);
+#endif
 		}
 	}
 
