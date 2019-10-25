@@ -17,6 +17,41 @@
 //
 //	L3-L4フィルタはその名の通り、discardするかhostのどのringで受けるかを決めるテーブルであり、rssとは関係ないようだ。
 //
+//	LED
+//		初期状態	消灯
+//		linkup		オレンジ	パケットG-blink
+//		00000000	オレンジ	パケットG-blink
+//		00000002	オレンジ	G-blink
+//		000000ff	消灯		消灯
+//		000000cc	消灯		パケットG-blink
+//		0000002a	  G-blink		G-blink
+//		000000a8	  G-blink	パケットG-blink
+//		00000028	  G-blink	パケットG-blink
+//		00000020	O-G-blink	パケットG-blink
+//		00000033	O点灯		消灯
+//		00000011	G点灯		G点灯
+//		00000088	O-blink		パケットG-blink
+//		000000c8	O-blink		パケットG-blink
+//		00000008	O-blink		パケットG-blink
+//
+//		0b0000_0000			link-active
+//		0b0000_0001			link点灯
+//		0b0000_0010			link点滅
+//		0b0000_0011			link消灯
+//		0b0000_0100			link-active
+//		0b0000_0101			link点灯
+//		0b0000_0110			link点滅
+//		0b0000_0111			link消灯
+
+//		0b0000_1000	O-blink
+//		0b0001_0000	G点灯
+//		0b0001_1000	O-G-blink(弱)
+//		0b0010_0000	O-G-blink
+//		0b0010_1000	G-blink
+//		0b0011_0000	O点灯
+//		0b0011_1000	O点滅
+//		0b0011_1101	消灯		link点灯
+//		0b0011_1111	消灯
 //
 //
 //
@@ -181,7 +216,9 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define HW_ATL_GLB_CPU_SCRATCH_SCP_ADR(i)	(0x0300 + (i) * 4)
 
 #define FW2X_MPI_LED_ADDR			0x031c
-#define  FW2X_LED_BLINK				0x2
+#define  FW2X_LED_BLINK0			0x00000002
+#define  FW2X_LED_BLINK1			0x00000008
+#define  FW2X_LED_BLINK2			0x00000020
 #define  FW2X_LED_DEFAULT			0x0
 
 #define HW_ATL_FW2X_MPI_EFUSE_ADDR		0x0364
@@ -621,17 +658,17 @@ typedef enum aq_fw_bootloader_mode {
 		AQ_WRITE_REG((sc), (reg), _v);			\
 	} while (/* CONSTCOND */ 0)
 
-#define WAIT_FOR(_EXPR_, _US_, _N_, _ERRP_)			\
+#define WAIT_FOR(expr, us, n, errp)				\
 	do {							\
 		unsigned int _n;				\
-		for (_n = _N_; (!(_EXPR_)) && _n != 0; --_n) {	\
-			delay((_US_));				\
+		for (_n = n; (!(expr)) && _n != 0; --_n) {	\
+			delay((us));				\
 		}						\
-		if ((_ERRP_ != NULL)) {				\
+		if ((errp != NULL)) {				\
 			if (_n == 0)				\
-				*(_ERRP_) = ETIMEDOUT;		\
+				*(errp) = ETIMEDOUT;		\
 			else					\
-				*(_ERRP_) = 0;			\
+				*(errp) = 0;			\
 		}						\
 	} while (/* CONSTCOND */ 0)
 
@@ -982,11 +1019,18 @@ static void aq_stop(struct ifnet *, int);
 static void aq_watchdog(struct ifnet *);
 static int aq_ioctl(struct ifnet *, unsigned long, void *);
 
+static int aq_txrx_rings_alloc(struct aq_softc *);
+static void aq_txrx_rings_free(struct aq_softc *);
 static int aq_txring_alloc(struct aq_softc *, struct aq_txring *);
 static void aq_txring_free(struct aq_softc *, struct aq_txring *);
 static int aq_rxring_alloc(struct aq_softc *, struct aq_rxring *);
 static void aq_rxring_free(struct aq_softc *, struct aq_rxring *);
 
+static void aq_initmedia(struct aq_softc *);
+static int aq_mediachange(struct ifnet *);
+static void aq_enable_intr(struct aq_softc *, bool, bool);
+
+static int aq_intr(void *);
 #ifdef  XXX_INTR_DEBUG
 static int aq_tx_intr_poll(struct aq_txring *);
 static int aq_rx_intr_poll(struct aq_rxring *);
@@ -996,6 +1040,15 @@ static int aq_rx_intr(struct aq_rxring *);
 
 static int aq_set_linkmode(struct aq_softc *, aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
 static int aq_get_linkmode(struct aq_softc *, aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
+
+static int aq_fw_reset(struct aq_softc *);
+static int aq_fw_ops_init(struct aq_softc *);
+static int aq_hw_chip_features_init(struct aq_softc *);
+static int aq_hw_init(struct aq_softc *);
+static int aq_hw_init_ucp(struct aq_softc *);
+static int aq_hw_reset(struct aq_softc *);
+static int aq_get_mac_addr(struct aq_softc *);
+static void aq_init_rsstable(struct aq_softc *);
 
 static int fw1x_reset(struct aq_softc *);
 static int fw1x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t,
@@ -1091,6 +1144,246 @@ static const struct aq_product {
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_100M | AQ_LINK_1G | AQ_LINK_2G5
 	}
 };
+
+static const struct aq_product *
+aq_lookup(const struct pci_attach_args *pa)
+{
+	unsigned int i;
+
+	for (i = 0; i < __arraycount(aq_products); i++) {
+		if (PCI_VENDOR(pa->pa_id)  == aq_products[i].aq_vendor &&
+		    PCI_PRODUCT(pa->pa_id) == aq_products[i].aq_product)
+			return &aq_products[i];
+	}
+	return NULL;
+}
+
+static int
+aq_match(device_t parent, cfdata_t cf, void *aux)
+{
+	struct pci_attach_args *pa = aux;
+
+	if (aq_lookup(pa) != NULL)
+		return 1;
+
+	return 0;
+}
+
+static void
+aq_attach(device_t parent, device_t self, void *aux)
+{
+	struct aq_softc *sc = device_private(self);
+	struct pci_attach_args *pa = aux;
+	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	pci_chipset_tag_t pc;
+	pcitag_t tag;
+	pcireg_t memtype, bar;
+	const struct aq_product *aqp;
+	pci_intr_handle_t ih;
+	const char *intrstr;
+	char intrbuf[PCI_INTRSTR_LEN];
+	int error;
+
+	sc->sc_dev = self;
+	mutex_init(&sc->sc_mutex, MUTEX_DEFAULT, IPL_NET);
+#ifdef USE_CALLOUT_TICK
+	callout_init(&sc->sc_tick_ch, 0);	/* XXX: CALLOUT_MPSAFE */
+#endif
+	sc->sc_pc = pc = pa->pa_pc;
+	sc->sc_pcitag = tag = pa->pa_tag;
+#ifdef XXX_FORCE_32BIT_PA
+	sc->sc_dmat = pa->pa_dmat;
+#else
+	sc->sc_dmat = pci_dma64_available(pa) ? pa->pa_dmat64 : pa->pa_dmat;
+#endif
+
+	sc->sc_product = PCI_PRODUCT(pa->pa_id);
+	sc->sc_revision = PCI_REVISION(pa->pa_class);
+
+	aqp = aq_lookup(pa);
+	KASSERT(aqp != NULL);
+
+	pci_aprint_devinfo_fancy(pa, "Ethernet controller", aqp->aq_name, 1);
+
+	bar = pci_conf_read(pc, tag, PCI_BAR(0));
+	if ((PCI_MAPREG_MEM_ADDR(bar) == 0) ||
+	    (PCI_MAPREG_TYPE(bar) != PCI_MAPREG_TYPE_MEM)) {
+		aprint_error_dev(sc->sc_dev, "wrong BAR type\n");
+		return;
+	}
+	memtype = pci_mapreg_type(pc, tag, PCI_BAR(0));
+	if (pci_mapreg_map(pa, PCI_BAR(0), memtype, 0, &sc->sc_iot, &sc->sc_ioh,
+	    NULL, &sc->sc_iosize) != 0) {
+		aprint_error_dev(sc->sc_dev, "unable to map register\n");
+		return;
+	}
+
+	if (pci_intr_map(pa, &ih)) {
+		aprint_error_dev(sc->sc_dev, "unable to map interrupt\n");
+		return;
+	}
+	intrstr = pci_intr_string(pc, ih, intrbuf, sizeof(intrbuf));
+	sc->sc_intrhand = pci_intr_establish_xname(pc, ih, IPL_NET, aq_intr,
+	    sc, device_xname(self));
+	if (sc->sc_intrhand == NULL) {
+		aprint_error_dev(self, "unable to establish interrupt");
+		if (intrstr != NULL)
+			aprint_error(" at %s", intrstr);
+		aprint_error("\n");
+		return;
+	}
+	aprint_normal_dev(self, "interrupting at %s\n", intrstr);
+
+	sc->sc_intr_moderation_enable = CONFIG_INTR_MODERATION_ENABLE;
+	sc->sc_lro_enable = CONFIG_LRO_ENABLE;
+	sc->sc_rss_enable = CONFIG_RSS_ENABLE;
+	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_ENABLE;
+
+	sc->sc_txringnum = AQ_TXRING_NUM;
+	sc->sc_rxringnum = AQ_RXRING_NUM;
+	sc->sc_ringnum = MAX(sc->sc_txringnum, sc->sc_rxringnum);
+	error = aq_txrx_rings_alloc(sc);
+	if (error != 0)
+		goto attach_failure;
+
+	error = aq_fw_reset(sc);
+	if (error != 0)
+		goto attach_failure;
+
+	error = aq_hw_chip_features_init(sc);
+	if (error != 0)
+		goto attach_failure;
+
+	error = aq_fw_ops_init(sc);
+	if (error != 0)
+		goto attach_failure;
+
+	error = aq_hw_init_ucp(sc);
+	if (error < 0)
+		goto attach_failure;
+
+	KASSERT(sc->sc_mbox_addr != 0);
+	error = aq_hw_reset(sc);
+	if (error != 0)
+		goto attach_failure;
+
+	aq_get_mac_addr(sc);
+	aq_init_rsstable(sc);
+
+	error = aq_hw_init(sc);	/* initialize and interrupts */
+	if (error != 0)
+		goto attach_failure;
+
+
+	sc->sc_media_type = aqp->aq_media_type;
+	sc->sc_available_rates = aqp->aq_available_rates;
+
+	sc->sc_ethercom.ec_ifmedia = &sc->sc_media;
+	ifmedia_init(&sc->sc_media, IFM_IMASK,
+	    aq_ifmedia_change, aq_ifmedia_status);
+	aq_initmedia(sc);
+
+	strlcpy(ifp->if_xname, device_xname(self), IFNAMSIZ);
+	ifp->if_softc = sc;
+	ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
+	ifp->if_baudrate = IF_Gbps(10);
+	ifp->if_init = aq_init;
+	ifp->if_ioctl = aq_ioctl;
+	ifp->if_start = aq_start;
+	ifp->if_stop = aq_stop;
+	ifp->if_watchdog = aq_watchdog;
+	IFQ_SET_READY(&ifp->if_snd);
+
+	//XXX: notyet
+	ifp->if_capabilities = 0;
+	ifp->if_capenable = 0;
+
+	sc->sc_ethercom.ec_capabilities = ETHERCAP_VLAN_MTU;
+
+	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
+	ether_ifattach(ifp, sc->sc_enaddr.ether_addr_octet);
+	ether_set_ifflags_cb(&sc->sc_ethercom, aq_ifflags_cb);
+
+	aq_enable_intr(sc, true, false);	/* only intr about link */
+
+	/* media update */
+	aq_mediachange(ifp);
+
+	/* get starting statistics values */
+	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_stats != NULL &&
+	    (sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[0]) == 0)) {
+		sc->sc_statistics_enable = true;
+	}
+
+#ifdef USE_CALLOUT_TICK
+	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
+#endif
+
+	return;
+
+ attach_failure:
+	aq_detach(self, 0);
+}
+
+static int
+aq_detach(device_t self, int flags __unused)
+{
+	struct aq_softc *sc = device_private(self);
+	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	int s;
+
+	if (sc->sc_iosize != 0) {
+		s = splnet();
+		aq_stop(ifp, 0);
+		splx(s);
+
+		if (sc->sc_intrhand != NULL) {
+			pci_intr_disestablish(sc->sc_pc, sc->sc_intrhand);
+			sc->sc_intrhand = NULL;
+		}
+
+		aq_txrx_rings_free(sc);
+
+		ether_ifdetach(ifp);
+		if_detach(ifp);
+
+		aprint_debug_dev(sc->sc_dev, "%s: bus_space_unmap\n", __func__);
+		bus_space_unmap(sc->sc_iot, sc->sc_ioh, sc->sc_iosize);
+		sc->sc_iosize = 0;
+	}
+
+#ifdef USE_CALLOUT_TICK
+	callout_stop(&sc->sc_tick_ch);
+#endif
+	mutex_destroy(&sc->sc_mutex);
+
+	return 0;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 static int
 aq_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
@@ -2104,10 +2397,13 @@ static int
 fw2x_led_control(struct aq_softc *sc, uint32_t onoff)
 {
 	if (sc->sc_fw_version >= FW2X_FW_MIN_VER_LED) {
+#if 0
 		AQ_WRITE_REG(sc, FW2X_MPI_LED_ADDR, onoff ?
-		    ((FW2X_LED_BLINK) | (FW2X_LED_BLINK << 2) |
-		    (FW2X_LED_BLINK << 4)) :
+		    (FW2X_LED_BLINK0 | FW2X_LED_BLINK1 | FW2X_LED_BLINK2) :
 		    (FW2X_LED_DEFAULT));
+#else
+		AQ_WRITE_REG(sc, FW2X_MPI_LED_ADDR, onoff);
+#endif
 	}
 	return 0;
 }
@@ -3038,222 +3334,6 @@ aq_enable_intr(struct aq_softc *sc, bool link, bool txrx)
 	printf("%s:%d: INTR_MASK/INTR_STATUS=%08x/%08x\n", __func__, __LINE__, AQ_READ_REG(sc, AQ_INTR_MASK), AQ_READ_REG(sc, AQ_INTR_STATUS));
 }
 
-static const struct aq_product *
-aq_lookup(const struct pci_attach_args *pa)
-{
-	unsigned int i;
-
-	for (i = 0; i < __arraycount(aq_products); i++) {
-		if (PCI_VENDOR(pa->pa_id)  == aq_products[i].aq_vendor &&
-		    PCI_PRODUCT(pa->pa_id) == aq_products[i].aq_product)
-			return &aq_products[i];
-	}
-	return NULL;
-}
-
-static int
-aq_match(device_t parent, cfdata_t cf, void *aux)
-{
-	struct pci_attach_args *pa = aux;
-
-	if (aq_lookup(pa) != NULL)
-		return 1;
-
-	return 0;
-}
-
-static void
-aq_attach(device_t parent, device_t self, void *aux)
-{
-	struct aq_softc *sc = device_private(self);
-	struct pci_attach_args *pa = aux;
-	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	pci_chipset_tag_t pc;
-	pcitag_t tag;
-	pcireg_t memtype, bar;
-	const struct aq_product *aqp;
-	pci_intr_handle_t ih;
-	const char *intrstr;
-	char intrbuf[PCI_INTRSTR_LEN];
-	int error;
-
-	sc->sc_dev = self;
-	mutex_init(&sc->sc_mutex, MUTEX_DEFAULT, IPL_NET);
-#ifdef USE_CALLOUT_TICK
-	callout_init(&sc->sc_tick_ch, 0);	/* XXX: CALLOUT_MPSAFE */
-#endif
-	sc->sc_pc = pc = pa->pa_pc;
-	sc->sc_pcitag = tag = pa->pa_tag;
-#ifdef XXX_FORCE_32BIT_PA
-	sc->sc_dmat = pa->pa_dmat;
-#else
-	sc->sc_dmat = pci_dma64_available(pa) ? pa->pa_dmat64 : pa->pa_dmat;
-#endif
-
-	sc->sc_product = PCI_PRODUCT(pa->pa_id);
-	sc->sc_revision = PCI_REVISION(pa->pa_class);
-
-	aqp = aq_lookup(pa);
-	KASSERT(aqp != NULL);
-
-	pci_aprint_devinfo_fancy(pa, "Ethernet controller", aqp->aq_name, 1);
-
-	bar = pci_conf_read(pc, tag, PCI_BAR(0));
-	if ((PCI_MAPREG_MEM_ADDR(bar) == 0) ||
-	    (PCI_MAPREG_TYPE(bar) != PCI_MAPREG_TYPE_MEM)) {
-		aprint_error_dev(sc->sc_dev, "wrong BAR type\n");
-		return;
-	}
-	memtype = pci_mapreg_type(pc, tag, PCI_BAR(0));
-	if (pci_mapreg_map(pa, PCI_BAR(0), memtype, 0, &sc->sc_iot, &sc->sc_ioh,
-	    NULL, &sc->sc_iosize) != 0) {
-		aprint_error_dev(sc->sc_dev, "unable to map register\n");
-		return;
-	}
-
-	if (pci_intr_map(pa, &ih)) {
-		aprint_error_dev(sc->sc_dev, "unable to map interrupt\n");
-		return;
-	}
-	intrstr = pci_intr_string(pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_intrhand = pci_intr_establish_xname(pc, ih, IPL_NET, aq_intr,
-	    sc, device_xname(self));
-	if (sc->sc_intrhand == NULL) {
-		aprint_error_dev(self, "unable to establish interrupt");
-		if (intrstr != NULL)
-			aprint_error(" at %s", intrstr);
-		aprint_error("\n");
-		return;
-	}
-	aprint_normal_dev(self, "interrupting at %s\n", intrstr);
-
-	sc->sc_intr_moderation_enable = CONFIG_INTR_MODERATION_ENABLE;
-	sc->sc_lro_enable = CONFIG_LRO_ENABLE;
-	sc->sc_rss_enable = CONFIG_RSS_ENABLE;
-	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_ENABLE;
-
-	sc->sc_txringnum = AQ_TXRING_NUM;
-	sc->sc_rxringnum = AQ_RXRING_NUM;
-	sc->sc_ringnum = MAX(sc->sc_txringnum, sc->sc_rxringnum);
-	error = aq_txrx_rings_alloc(sc);
-	if (error != 0)
-		goto attach_failure;
-
-	error = aq_fw_reset(sc);
-	if (error != 0)
-		goto attach_failure;
-
-	error = aq_hw_chip_features_init(sc);
-	if (error != 0)
-		goto attach_failure;
-
-	error = aq_fw_ops_init(sc);
-	if (error != 0)
-		goto attach_failure;
-
-	error = aq_hw_init_ucp(sc);
-	if (error < 0)
-		goto attach_failure;
-
-	KASSERT(sc->sc_mbox_addr != 0);
-	error = aq_hw_reset(sc);
-	if (error != 0)
-		goto attach_failure;
-
-	aq_get_mac_addr(sc);
-	aq_init_rsstable(sc);
-
-	error = aq_hw_init(sc);	/* initialize and interrupts */
-	if (error != 0)
-		goto attach_failure;
-
-
-	sc->sc_media_type = aqp->aq_media_type;
-	sc->sc_available_rates = aqp->aq_available_rates;
-
-	sc->sc_ethercom.ec_ifmedia = &sc->sc_media;
-	ifmedia_init(&sc->sc_media, IFM_IMASK,
-	    aq_ifmedia_change, aq_ifmedia_status);
-	aq_initmedia(sc);
-
-	strlcpy(ifp->if_xname, device_xname(self), IFNAMSIZ);
-	ifp->if_softc = sc;
-	ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
-	ifp->if_baudrate = IF_Gbps(10);
-	ifp->if_init = aq_init;
-	ifp->if_ioctl = aq_ioctl;
-	ifp->if_start = aq_start;
-	ifp->if_stop = aq_stop;
-	ifp->if_watchdog = aq_watchdog;
-	IFQ_SET_READY(&ifp->if_snd);
-
-	//XXX: notyet
-	ifp->if_capabilities = 0;
-	ifp->if_capenable = 0;
-
-	sc->sc_ethercom.ec_capabilities = ETHERCAP_VLAN_MTU;
-
-	if_attach(ifp);
-	if_deferred_start_init(ifp, NULL);
-	ether_ifattach(ifp, sc->sc_enaddr.ether_addr_octet);
-	ether_set_ifflags_cb(&sc->sc_ethercom, aq_ifflags_cb);
-
-	aq_enable_intr(sc, true, false);	/* only intr about link */
-
-	/* media update */
-	aq_mediachange(ifp);
-
-	/* get starting statistics values */
-	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_stats != NULL &&
-	    (sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[0]) == 0)) {
-		sc->sc_statistics_enable = true;
-	}
-
-#ifdef USE_CALLOUT_TICK
-	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
-#endif
-
-	return;
-
- attach_failure:
-	aq_detach(self, 0);
-}
-
-static int
-aq_detach(device_t self, int flags __unused)
-{
-	struct aq_softc *sc = device_private(self);
-	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	int s;
-
-	if (sc->sc_iosize != 0) {
-		s = splnet();
-		aq_stop(ifp, 0);
-		splx(s);
-
-		if (sc->sc_intrhand != NULL) {
-			pci_intr_disestablish(sc->sc_pc, sc->sc_intrhand);
-			sc->sc_intrhand = NULL;
-		}
-
-		aq_txrx_rings_free(sc);
-
-		ether_ifdetach(ifp);
-		if_detach(ifp);
-
-		aprint_debug_dev(sc->sc_dev, "%s: bus_space_unmap\n", __func__);
-		bus_space_unmap(sc->sc_iot, sc->sc_ioh, sc->sc_iosize);
-		sc->sc_iosize = 0;
-	}
-
-#ifdef USE_CALLOUT_TICK
-	callout_stop(&sc->sc_tick_ch);
-#endif
-	mutex_destroy(&sc->sc_mutex);
-
-	return 0;
-}
-
 static int
 aq_ifmedia_change(struct ifnet * const ifp)
 {
@@ -3687,6 +3767,20 @@ aq_rx_intr(struct aq_rxring *rxring)
 #ifdef XXX_DUMP_RX_MBUF
 		hexdump(printf, "mbuf", m->m_data, m->m_len);	// dump this mbuf
 #endif
+#if 1
+		//LED DEBUG
+		{
+			uint32_t v32 = 0;
+			unsigned char *p = mtod(m, unsigned char *);
+			if (p[12] == 0xff && p[13] == 0xff) {
+				v32 = ((p[2] << 24) | (p[3] << 16) | (p[4] << 8) | p[5]);
+				if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->led_control != NULL) {
+					printf("LED = %08x\n", v32);
+					sc->sc_fw_ops->led_control(sc, v32);
+				}
+			}
+		}
+#endif
 
 		if (m0 == NULL) {
 			m0 = m;
@@ -3740,6 +3834,22 @@ aq_ifflags_cb(struct ethercom *ec)
 
 	if ((iffchange & IFF_PROMISC) != 0)
 		error = aq_set_filter(sc);
+
+
+	if ((iffchange & IFF_LINK0) != 0) {
+		if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->led_control != NULL) {
+			uint32_t led = 0;
+			if (ifp->if_flags & IFF_LINK0)
+				led |= 0x0002;
+			if (ifp->if_flags & IFF_LINK1)
+				led |= 0x0008;
+			if (ifp->if_flags & IFF_LINK2)
+				led |= 0x0020;
+
+			sc->sc_fw_ops->led_control(sc, led);
+		}
+	}
+
 
 	sc->sc_if_flags = ifp->if_flags;
 	return error;
