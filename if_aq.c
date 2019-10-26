@@ -17,6 +17,8 @@
 //
 //	L3-L4フィルタはその名の通り、discardするかhostのどのringで受けるかを決めるテーブルであり、rssとは関係ないようだ。
 //
+//	RSS_ENABLEの状態だと0800と8d66が届かないけど、statistics的には受信している
+//	そしてUDPはちゃんと受信している。(たぶんL3 filterでUDP throughにしてるせい)
 //
 //
 //
@@ -159,9 +161,9 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define CONFIG_INTR_MODERATION_ENABLE	1	/* ok */
 
-#define CONFIG_LRO_ENABLE		0
-#define CONFIG_RSS_ENABLE		0
-#define CONFIG_OFFLOAD_ENABLE		0
+#define CONFIG_LRO_ENABLE		1
+#define CONFIG_RSS_ENABLE		1
+#define CONFIG_OFFLOAD_ENABLE		1
 #define CONFIG_L3_FILTER_ENABLE		0
 
 #define AQ_RSS_HASHKEY_SIZE			40
@@ -294,66 +296,65 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define RPF_MCAST_FILTER_MASK_REG		0x5270
 #define  RPF_MCAST_FILTER_MASK_ALLMULTI		__BIT(14)
 
+#define RPF_VLAN_MODE_ADR			0x5280
+#define  RPF_VLAN_MODE_PROMISC			__BIT(1)
+#define  RPF_VLAN_MODE_ACCEPT_UNTAGGED		__BIT(2)
+#define  RPF_VLAN_MODE_UNTAGGED_ACTION		__BITS(5,3)
+#define   RPF_VLAN_MODE_UNTAGGED_ACT_DISCARD		0
+#define   RPF_VLAN_MODE_UNTAGGED_ACT_HOST		1
+#define   RPF_VLAN_MODE_UNTAGGED_ACT_MANAGEMENT		2
+#define   RPF_VLAN_MODE_UNTAGGED_ACT_HOST_MANAGEMENT	3
+#define   RPF_VLAN_MODE_UNTAGGED_ACT_WOL		4
 
-#define RPF_VL_ACCEPT_UNTAGGED_MODE_ADR		0x5280
-#define  RPF_VL_PROMISC_MODE_MSK		__BIT(1)
-#define  RPF_VL_ACCEPT_UNTAGGED_MODE_MSK	__BIT(2)
-#define  RPF_VL_UNTAGGED_ACT_MSK		__BITS(5,3)
-#define   RPF_VL_UNTAGGED_ACT_DISCARD		0
-#define   RPF_VL_UNTAGGED_ACT_HOST		1
-#define   RPF_VL_UNTAGGED_ACT_MANAGEMENT	2
-#define   RPF_VL_UNTAGGED_ACT_HOST_MANAGEMENT	3
-#define   RPF_VL_UNTAGGED_ACT_WOL		4
+#define RPF_VLAN_TPID_ADR			0x5284
+#define  RPF_VLAN_TPID_OUTER_MSK		__BITS(31,16)
+#define  RPF_VLAN_TPID_INNER_MSK		__BITS(15,0)
 
+#define RPF_VLAN_FILTER_REG(f)			(0x5290 + (f) * 4)	/* RPF_VLAN_FILTER_REG[16] */
+#define  RPF_VLAN_FILTER_ENABLE			__BIT(31)
+#define  RPF_VLAN_FILTER_RXQ_ENABLE		__BIT(28)
+#define  RPF_VLAN_FILTER_RXQ			__BITS(24,20)
+#define  RPF_VLAN_FILTER_ACTION			__BITS(18,16)
+#define  RPF_VLAN_FILTER_ID			__BITS(11,0)
 
+#define RPF_ETHERTYPE_FILTER_REG(n)		(0x5300 + (n) * 4)
+#define  RPF_ETHERTYPE_FILTER_ENABLE		__BIT(31)
+#define  RPF_ETHERTYPE_FILTER_UPF_ENABLE	__BIT(30)	/* UPF: user priority filter */
+#define  RPF_ETHERTYPE_FILTER_RXQF_ENABLE	__BIT(29)
+#define  RPF_ETHERTYPE_FILTER_UPF		__BITS(28,26)
+#define  RPF_ETHERTYPE_FILTER_RXQF		__BITS(24,20)
+#define  RPF_ETHERTYPE_FILTER_MNG_RXQF		__BIT(19)
+#define  RPF_ETHERTYPE_FILTER_ACTF		__BITS(18,16)
+#define  RPF_ETHERTYPE_FILTER_VALF		__BITS(15,0)
 
+#define RPF_L3_FILTER_REG(f)			(0x5380 + (f) * 4)	/* RPF_L3_FILTER_REG[8] */
+#define  RPF_L3_FILTER_L4_ENABLE			__BIT(31)
+#define  RPF_L3_FILTER_IPV6_ENABLE			__BIT(30)
+#define  RPF_L3_FILTER_SRCADDR_ENABLE			__BIT(29)
+#define  RPF_L3_FILTER_DSTADDR_ENABLE			__BIT(28)
+#define  RPF_L3_FILTER_L4_SRCPORT_ENABLE		__BIT(27)
+#define  RPF_L3_FILTER_L4_DSTPORT_ENABLE		__BIT(26)
+#define  RPF_L3_FILTER_L4_PROTO_ENABLE			__BIT(25)
+#define  RPF_L3_FILTER_ARP_ENABLE			__BIT(24)
+#define  RPF_L3_FILTER_L4_RXQUEUE_ENABLE		__BIT(23)
+#define  RPF_L3_FILTER_L4_RXQUEUE_MANAGEMENT_ENABLE	__BIT(22)
+#define  RPF_L3_FILTER_L4_ACTION			__BITS(16,18)
+#define   RPF_L3_FILTER_L4_ACTION_DISCARD		0
+#define   RPF_L3_FILTER_L4_ACTION_HOST			1
+#define  RPF_L3_FILTER_L4_RXQUEUE			__BITS(12,8)
+#define  RPF_L3_FILTER_L4_PROTO				__BITS(2,0)
+#define   RPF_L3_FILTER_L4_PROTF_TCP			0
+#define   RPF_L3_FILTER_L4_PROTF_UDP			1
+#define   RPF_L3_FILTER_L4_PROTF_SCTP			2
+#define   RPF_L3_FILTER_L4_PROTF_ICMP			3
 
-#define RPF_VL_TPID_ADR				0x5284
-#define  RPF_VL_TPID_OUTER_MSK			__BITS(31,16)
-#define  RPF_VL_TPID_INNER_MSK			__BITS(15,0)
-
-#define RPF_ET_ENF_ADR(n)			(0x5300 + (n) * 4)
-#define  RPF_ET_ENF_MSK				__BIT(31)
-#define  RPF_ET_UPFEN_MSK			__BIT(30)	// user priority filter enable
-#define  RPF_ET_RXQFEN_MSK			__BIT(29)	// RX queue filter enable
-#define  RPF_ET_UPF_MSK				__BITS(28,26)	// user priority
-#define  RPF_ET_RXQF_MSK			__BITS(24,20)	// RX queue
-#define  RPF_ET_MNG_RXQF_MSK			__BIT(19)
-#define  RPF_ET_ACTF_MSK			__BITS(18,16)
-#define  RPF_ET_VALF_MSK			__BITS(15,0)
-
-
-#define RPF_L3_CTRL_REG(f)			(0x5380 + (f) * 4)	/* RPF_L3_CTRL_REG[8] */
-#define  RPF_L3_L4_ENABLE			__BIT(31)
-#define  RPF_L3_IPV6_ENABLE			__BIT(30)
-#define  RPF_L3_SRCADDR_ENABLE			__BIT(29)
-#define  RPF_L3_DSTADDR_ENABLE			__BIT(28)
-#define  RPF_L3_L4_SRCPORT_ENABLE		__BIT(27)
-#define  RPF_L3_L4_DSTPORT_ENABLE		__BIT(26)
-#define  RPF_L3_L4_PROTO_ENABLE			__BIT(25)
-#define  RPF_L3_ARP_ENABLE			__BIT(24)
-#define  RPF_L3_L4_RXQUEUE_ENABLE		__BIT(23)
-#define  RPF_L3_L4_RXQUEUE_MANAGEMENT_ENABLE	__BIT(22)
-#define  RPF_L3_L4_ACTION			__BITS(16,18)
-#define   RPF_L3_L4_ACTION_DISCARD		0
-#define   RPF_L3_L4_ACTION_HOST			1
-#define  RPF_L3_L4_RXQUEUE			__BITS(12,8)
-#define  RPF_L3_L4_PROTO			__BITS(2,0)
-#define   RPF_L3_L4_PROTF_TCP			0
-#define   RPF_L3_L4_PROTF_UDP			1
-#define   RPF_L3_L4_PROTF_SCTP			2
-#define   RPF_L3_L4_PROTF_ICMP			3
-
-#define RPF_L3_SRCADDR(f)			(0x53b0 + (f) * 4)
-#define RPF_L3_DSTADDR(f)			(0x53d0 + (f) * 4)
-#define RPF_L4_SRCPORT(f)			(0x5400 + (f) * 4)
-#define RPF_L4_DSTPORT(f)			(0x5420 + (f) * 4)
-
-
+#define RPF_L3_FILTER_SRCADDR_REG(f)		(0x53b0 + (f) * 4)
+#define RPF_L3_FILTER_DSTADDR_REG(f)		(0x53d0 + (f) * 4)
+#define RPF_L3_FILTER_L4_SRCPORT_REG(f)		(0x5400 + (f) * 4)
+#define RPF_L3_FILTER_L4_DSTPORT_REG(f)		(0x5420 + (f) * 4)
 
 #define RX_FLR_RSS_CONTROL1_ADR			0x54c0
 #define  RX_FLR_RSS_CONTROL1_ENABLE		__BIT(31)
-
 
 #define RPF_RPB_RX_TC_UPT_ADR			0x54c4
 #define RPF_RPB_RX_TC_UPT_MASK(tc)		(0x00000007 << ((tc) * 4))
@@ -2336,7 +2337,7 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_ADR, RPB_RPF_RX_FC_MODE, 0);
 	AQ_WRITE_REG(sc, RX_FLR_RSS_CONTROL1_ADR, 0);
 	for (i = 0; i < 32; i++)
-		AQ_WRITE_REG_BIT(sc, RPF_ET_ENF_ADR(i), RPF_ET_ENF_MSK, 0);
+		AQ_WRITE_REG_BIT(sc, RPF_ETHERTYPE_FILTER_REG(i), RPF_ETHERTYPE_FILTER_ENABLE, 0);
 
 	if (sc->sc_rss_enable) {
 		/* Rx TC/RSS number config */
@@ -2358,11 +2359,11 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 	AQ_WRITE_REG(sc, RPF_MCAST_FILTER_REG(0), 0x00010fff);
 
 	/* Vlan filters */
-	AQ_WRITE_REG_BIT(sc, RPF_VL_TPID_ADR, RPF_VL_TPID_OUTER_MSK, ETHERTYPE_QINQ);
-	AQ_WRITE_REG_BIT(sc, RPF_VL_TPID_ADR, RPF_VL_TPID_OUTER_MSK, ETHERTYPE_VLAN);
-	AQ_WRITE_REG_BIT(sc, RPF_VL_ACCEPT_UNTAGGED_MODE_ADR, RPF_VL_PROMISC_MODE_MSK, 1);
-	AQ_WRITE_REG_BIT(sc, RPF_VL_ACCEPT_UNTAGGED_MODE_ADR, RPF_VL_ACCEPT_UNTAGGED_MODE_MSK, 1);
-	AQ_WRITE_REG_BIT(sc, RPF_VL_ACCEPT_UNTAGGED_MODE_ADR, RPF_VL_UNTAGGED_ACT_MSK, RPF_VL_UNTAGGED_ACT_HOST);
+	AQ_WRITE_REG_BIT(sc, RPF_VLAN_TPID_ADR, RPF_VLAN_TPID_OUTER_MSK, ETHERTYPE_QINQ);
+	AQ_WRITE_REG_BIT(sc, RPF_VLAN_TPID_ADR, RPF_VLAN_TPID_OUTER_MSK, ETHERTYPE_VLAN);
+	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_ADR, RPF_VLAN_MODE_PROMISC, 1);
+	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_ADR, RPF_VLAN_MODE_ACCEPT_UNTAGGED, 1);
+	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_ADR, RPF_VLAN_MODE_UNTAGGED_ACTION, RPF_VLAN_MODE_UNTAGGED_ACT_HOST);
 
 	/* misc */
 	if (sc->sc_features & FEATURES_RPF2)
@@ -2587,7 +2588,7 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 
 	/* clear all filter */
 	for (i = 0; i < 8; i++) {
-		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(i), RPF_L3_L4_ENABLE, 0);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(i), RPF_L3_FILTER_L4_ENABLE, 0);
 	}
 
 	if (!enable) {
@@ -2597,19 +2598,72 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 		 * HW does not track RSS stream for fragmenged UDP,
 		 * 0x5040 control reg does not work.
 		 */
-		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_ENABLE, 1);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_PROTO_ENABLE, 1);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_PROTO, RPF_L3_L4_PROTF_UDP);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_RXQUEUE_ENABLE, 1);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_RXQUEUE, 0);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_ACTION, RPF_L3_L4_ACTION_HOST);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_ENABLE, 1);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_PROTO_ENABLE, 1);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_PROTO, RPF_L3_FILTER_L4_PROTF_UDP);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_RXQUEUE_ENABLE, 1);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_RXQUEUE, 1);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_ACTION, RPF_L3_FILTER_L4_ACTION_HOST);
 	}
 }
+
+struct aq_rx_filter_vlan {
+	uint8_t enable;
+	uint8_t location;
+	uint16_t vlan_id;
+	uint8_t queue;
+};
 
 static void
 aq_update_vlan_filters(struct aq_softc *sc)
 {
-	//XXX: notyet
+#define VLAN_MAX_FILTERS		16
+//	struct aq_rx_filter_vlan aq_vlans[AQ_HW_VLAN_MAX_FILTERS];
+//	int bit_pos = 0;
+//	int vlan_tag = -1;
+	int i;
+
+	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_ADR, RPF_VLAN_MODE_PROMISC, 1);
+#if 0
+XXX: notyet
+	for (i = 0; i < AQ_HW_VLAN_MAX_FILTERS; i++) {
+		bit_ffs_at(softc->vlan_tags, bit_pos, 4096, &vlan_tag);
+		if (vlan_tag != -1) {
+			aq_vlans[i].enable = true;
+			aq_vlans[i].location = i;
+			aq_vlans[i].queue = 0xFF;
+			aq_vlans[i].vlan_id = vlan_tag;
+			bit_pos = vlan_tag;
+		} else {
+			aq_vlans[i].enable = false;
+		}
+	}
+#endif
+
+	for (i = 0; i < VLAN_MAX_FILTERS; i++) {
+		AQ_WRITE_REG_BIT(sc, RPF_VLAN_FILTER_REG(i), RPF_VLAN_FILTER_ENABLE, 0);
+		AQ_WRITE_REG_BIT(sc, RPF_VLAN_FILTER_REG(i), RPF_VLAN_FILTER_RXQ_ENABLE, 0);
+
+#if 0
+XXX: notyet
+		if (aq_vlans[i].enable) {
+			hw_atl_rpf_vlan_id_flr_set(self,
+						   aq_vlans[i].vlan_id,
+						   i);
+			hw_atl_rpf_vlan_flr_act_set(self, 1U, i);
+			hw_atl_rpf_vlan_flr_en_set(self, 1U, i);
+			if (aq_vlans[i].queue != 0xFF) {
+				hw_atl_rpf_vlan_rxq_flr_set(self,
+							    aq_vlans[i].queue,
+							    i);
+				hw_atl_rpf_vlan_rxq_en_flr_set(self, 1U, i);
+			}
+		}
+#endif
+	}
+
+//	hw_atl_b0_hw_vlan_promisc_set(hw, aq_is_vlan_promisc_required(softc));
+
 }
 
 static int
