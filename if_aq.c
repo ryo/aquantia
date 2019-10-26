@@ -45,7 +45,7 @@
 //#define XXX_DUMP_RX_MBUF
 //#define XXX_DUMP_MACTABLE
 //#ifdef XXX_DUMP_RING
-//#ifdef XXX_DUMP_RSS_KEY
+#define XXX_DUMP_RSS_KEY
 
 //
 // terminology
@@ -157,14 +157,15 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <dev/pci/pcireg.h>
 #include <dev/pci/pcidevs.h>
 
-#define CONFIG_INTR_MODERATION_ENABLE	1
+#define CONFIG_INTR_MODERATION_ENABLE	1	/* ok */
+
 #define CONFIG_LRO_ENABLE		0
 #define CONFIG_RSS_ENABLE		0
 #define CONFIG_OFFLOAD_ENABLE		0
 #define CONFIG_L3_FILTER_ENABLE		0
 
-#define HW_ATL_RSS_HASHKEY_SIZE			40
-#define HW_ATL_RSS_INDIRECTION_TABLE_MAX	64
+#define AQ_RSS_HASHKEY_SIZE			40
+#define AQ_RSS_INDIRECTION_TABLE_MAX		64
 
 
 #define AQ_SOFTRESET_REG			0x0000
@@ -172,8 +173,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  AQ_SOFTRESET_DISABLE			__BIT(14) /* reset disable */
 
 #define HW_ATL_MPI_FW_VERSION			0x0018
-#define GLB_FW_IMAGE_ID1_ADR			0x0018
-#define HW_ATL_GLB_MIF_ID_ADR			0x001c
+#define HW_ATL_MPI_HW_REVISION			0x001c
 #define GLB_NVR_INTERFACE1_ADR			0x0100
 #define HW_ATL_MIF_CMD				0x0200
 #define  HW_ATL_MIF_CMD_EXECUTE				0x00008000
@@ -181,7 +181,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define HW_ATL_MIF_ADDR				0x0208
 #define HW_ATL_MIF_VAL				0x020c
 
-#define HW_ATL_GLB_CPU_SCRATCH_SCP_ADR(i)	(0x0300 + (i) * 4)
+#define FW_GLB_CPU_SCRATCH_SCP_ADR(i)		(0x0300 + (i) * 4)
 
 #define FW2X_LED_MIN_VERSION			0x03010026	/* require 3.1.38 */
 #define FW2X_LED_ADDR				0x031c
@@ -200,11 +200,11 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define   FW2X_STATUSLED_ORANGE_GREEN_BLINK	8
 #define   FW2X_STATUSLED_GREEN_BLINK		10
 
-#define HW_ATL_FW1X_0X370_ADR			0x0370
-#define HW_ATL_FW1X_MPI_EFUSE_ADDR		0x0374
+#define FW1X_0X370_ADR				0x0370
+#define FW1X_MPI_EFUSE_ADDR			0x0374
 
-#define HW_ATL_FW2X_MPI_MBOX_ADDR		0x0360
-#define HW_ATL_FW2X_MPI_EFUSE_ADDR		0x0364
+#define FW2X_MPI_MBOX_ADDR			0x0360
+#define FW2X_MPI_EFUSE_ADDR			0x0364
 #define FW2X_MPI_CONTROL_ADDR			0x0368	/* 64bit */
 #define FW2X_MPI_STATE_ADDR			0x0370	/* 64bit */
 #define HW_ATL_MPI_BOOT_EXIT_CODE		0x0388
@@ -948,8 +948,8 @@ struct aq_softc {
 	bool sc_offload_enable;
 	bool sc_l3_filter_enable;
 
-	uint32_t sc_rss_key[HW_ATL_RSS_HASHKEY_SIZE / sizeof(uint32_t)];
-	uint8_t sc_rss_table[HW_ATL_RSS_INDIRECTION_TABLE_MAX];
+	uint32_t sc_rss_key[AQ_RSS_HASHKEY_SIZE / sizeof(uint32_t)];
+	uint8_t sc_rss_table[AQ_RSS_INDIRECTION_TABLE_MAX];
 
 	int sc_media_active;
 
@@ -1478,7 +1478,7 @@ mac_soft_reset_flb(struct aq_softc *sc)
 	global_software_reset(sc);
 
 	for (timo = 0; timo < 1000; timo++) {
-		if (AQ_READ_REG(sc, GLB_FW_IMAGE_ID1_ADR) != 0)
+		if (AQ_READ_REG(sc, HW_ATL_MPI_FW_VERSION) != 0)
 			break;
 		msec_delay(10);
 	}
@@ -1627,19 +1627,19 @@ aq_hw_init_ucp(struct aq_softc *sc)
 	int timo;
 
 	if (FW_VERSION_MAJOR(sc) == 1) {
-		if (AQ_READ_REG(sc, HW_ATL_FW1X_0X370_ADR) == 0) {
+		if (AQ_READ_REG(sc, FW1X_0X370_ADR) == 0) {
 			uint32_t data;
 			cprng_fast(&data, sizeof(data));
 			data &= 0xfefefefe;
 			data |= 0x02020202;
-			AQ_WRITE_REG(sc, HW_ATL_FW1X_0X370_ADR, data);
+			AQ_WRITE_REG(sc, FW1X_0X370_ADR, data);
 		}
-		AQ_WRITE_REG(sc, HW_ATL_GLB_CPU_SCRATCH_SCP_ADR(25), 0);
+		AQ_WRITE_REG(sc, FW_GLB_CPU_SCRATCH_SCP_ADR(25), 0);
 	}
 
 	for (timo = 100; timo > 0; timo--) {
 		sc->sc_mbox_addr =
-		    AQ_READ_REG(sc, HW_ATL_FW2X_MPI_MBOX_ADDR);
+		    AQ_READ_REG(sc, FW2X_MPI_MBOX_ADDR);
 		if (sc->sc_mbox_addr != 0)
 			break;
 		delay(1000);
@@ -1682,7 +1682,7 @@ aq_fw_version_init(struct aq_softc *sc)
 	    FW_VERSION_MAJOR(sc), FW_VERSION_MINOR(sc), FW_VERSION_BUILD(sc));
 
 	/* detect revision */
-	uint32_t hwrev = AQ_READ_REG(sc, HW_ATL_GLB_MIF_ID_ADR);
+	uint32_t hwrev = AQ_READ_REG(sc, HW_ATL_MPI_HW_REVISION);
 	switch (hwrev & 0x0000000f) {
 	case 0x01:
 		aprint_verbose_dev(sc->sc_dev, "Atlantic revision A0, %s\n",
@@ -2015,9 +2015,9 @@ aq_get_mac_addr(struct aq_softc *sc)
 
 	efuse_shadow_addr = 0;
 	if (FW_VERSION_MAJOR(sc) >= 2)
-		efuse_shadow_addr = AQ_READ_REG(sc, HW_ATL_FW2X_MPI_EFUSE_ADDR);
+		efuse_shadow_addr = AQ_READ_REG(sc, FW2X_MPI_EFUSE_ADDR);
 	else
-		efuse_shadow_addr = AQ_READ_REG(sc, HW_ATL_FW1X_MPI_EFUSE_ADDR);
+		efuse_shadow_addr = AQ_READ_REG(sc, FW1X_MPI_EFUSE_ADDR);
 
 	if (efuse_shadow_addr == 0) {
 		aprint_error_dev(sc->sc_dev, "cannot get efuse addr\n");
@@ -2508,24 +2508,23 @@ aq_hw_offload_set(struct aq_softc *sc)
 static void
 aq_init_rsstable(struct aq_softc *sc)
 {
-	int i;
+	unsigned int i;
 
 	/* initialize RSS key and redirect table */
 	cprng_fast(&sc->sc_rss_key, sizeof(sc->sc_rss_key));
-	for (i = 0; i < HW_ATL_RSS_INDIRECTION_TABLE_MAX; i++) {
-//		sc->sc_rss_table[i] = i % sc->sc_rxringnum;
-		sc->sc_rss_table[i] = 1;
+	for (i = 0; i < AQ_RSS_INDIRECTION_TABLE_MAX; i++) {
+		sc->sc_rss_table[i] = i % sc->sc_rxringnum;
 	}
 
 #ifdef XXX_DUMP_RSS_KEY
 	printf("rss_key:");
-	for (i = 0; i < HW_ATL_RSS_HASHKEY_SIZE; i++) {
+	for (i = 0; i < __arraycount(sc->sc_rss_key); i++) {
 		printf(" %08x", sc->sc_rss_key[i]);
 	}
 	printf("\n");
 
 	printf("rss_table:");
-	for (i = 0; i < HW_ATL_RSS_INDIRECTION_TABLE_MAX; i++) {
+	for (i = 0; i < AQ_RSS_INDIRECTION_TABLE_MAX; i++) {
 		printf(" %d", sc->sc_rss_table[i]);
 	}
 	printf("\n");
@@ -2559,12 +2558,12 @@ aq_hw_rss_hash_set(struct aq_softc *sc)
 static int
 aq_hw_rss_set(struct aq_softc *sc)
 {
-	uint16_t bitary[1 + (HW_ATL_RSS_INDIRECTION_TABLE_MAX * 3 / 16)];
+	uint16_t bitary[1 + (AQ_RSS_INDIRECTION_TABLE_MAX * 3 / 16)];
 	int error = 0;
 	unsigned int i;
 
 	memset(bitary, 0, sizeof(bitary));
-	for (i = HW_ATL_RSS_INDIRECTION_TABLE_MAX; i--;) {
+	for (i = AQ_RSS_INDIRECTION_TABLE_MAX; i--;) {
 		(*(uint32_t *)(bitary + ((i * 3) / 16))) |=
 		    ((sc->sc_rss_table[i]) << ((i * 3) & 15));
 	}
@@ -2744,29 +2743,29 @@ aq_update_link_status(struct aq_softc *sc)
 			uint64_t n = (uint32_t)(sc->sc_statistics[cur].name - sc->sc_statistics[prev].name);				\
 			/* printf("# %s: %s: %u\n", descr, #name, sc->sc_statistics[cur].name); */					\
 			if (n != 0) {													\
-				printf("====================%s: %s: %lu -> %lu (+%lu)\n", descr, #name, sc->sc_statistics_ ## name, sc->sc_statistics_ ## name + n, n);	\
+				device_printf(sc->sc_dev, "STAT: %s: %s: %lu -> %lu (+%lu)\n", descr, #name, sc->sc_statistics_ ## name, sc->sc_statistics_ ## name + n, n);	\
 			}														\
 			sc->sc_statistics_ ## name += n;										\
 		} while (/*CONSTCOND*/0);
 
-		ADD_DELTA(cur, prev, uprc, "rx ucast");
-		ADD_DELTA(cur, prev, mprc, "rx mcast");
-		ADD_DELTA(cur, prev, bprc, "rx bcast");
-		ADD_DELTA(cur, prev, prc, "rx good");
-		ADD_DELTA(cur, prev, erpr, "rx error");
-		ADD_DELTA(cur, prev, uptc, "tx ucast");
-		ADD_DELTA(cur, prev, mptc, "tx mcast");
-		ADD_DELTA(cur, prev, bptc, "tx bcast");
-		ADD_DELTA(cur, prev, ptc, "tx good");
-		ADD_DELTA(cur, prev, erpt, "tx error");
-		ADD_DELTA(cur, prev, mbtc, "tx mcast bytes");
-		ADD_DELTA(cur, prev, bbtc, "tx bcast bytes");
-		ADD_DELTA(cur, prev, mbrc, "rx mcast bytes");
-		ADD_DELTA(cur, prev, bbrc, "rx bcast bytes");
-		ADD_DELTA(cur, prev, ubrc, "rx ucast bytes");
-		ADD_DELTA(cur, prev, ubtc, "tx ucast bytes");
-		ADD_DELTA(cur, prev, dpc, "dma drop");
-		ADD_DELTA(cur, prev, cprc, "rx coalesced");
+		ADD_DELTA(cur, prev, uprc, "RX ucast");
+		ADD_DELTA(cur, prev, mprc, "RX mcast");
+		ADD_DELTA(cur, prev, bprc, "RX bcast");
+		ADD_DELTA(cur, prev, prc,  "RX good");
+		ADD_DELTA(cur, prev, erpr, "RX error");
+		ADD_DELTA(cur, prev, uptc, "TX ucast");
+		ADD_DELTA(cur, prev, mptc, "TX mcast");
+		ADD_DELTA(cur, prev, bptc, "TX bcast");
+		ADD_DELTA(cur, prev, ptc,  "TX good");
+		ADD_DELTA(cur, prev, erpt, "TX error");
+		ADD_DELTA(cur, prev, mbtc, "TX mcast bytes");
+		ADD_DELTA(cur, prev, bbtc, "TX bcast bytes");
+		ADD_DELTA(cur, prev, mbrc, "RX mcast bytes");
+		ADD_DELTA(cur, prev, bbrc, "RX bcast bytes");
+		ADD_DELTA(cur, prev, ubrc, "RX ucast bytes");
+		ADD_DELTA(cur, prev, ubtc, "TX ucast bytes");
+		ADD_DELTA(cur, prev, dpc,  "DMA drop");
+		ADD_DELTA(cur, prev, cprc, "RX coalesced");
 
 		sc->sc_statistics_idx = cur;
 	}
