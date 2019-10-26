@@ -38,13 +38,14 @@
 
 //#define XXX_FORCE_32BIT_PA
 //#define XXX_DEBUG_PMAP_EXTRACT
-#undef USE_CALLOUT_TICK
+#define USE_CALLOUT_TICK
 #define XXX_INTR_DEBUG
-#define XXX_RXINTR_DEBUG
+//#define XXX_RXINTR_DEBUG
 //#define XXX_DUMP_RX_COUNTER
 //#define XXX_DUMP_RX_MBUF
 //#define XXX_DUMP_MACTABLE
 //#ifdef XXX_DUMP_RING
+//#ifdef XXX_DUMP_RSS_KEY
 
 //
 // terminology
@@ -159,6 +160,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define CONFIG_INTR_MODERATION_ENABLE	1
 #define CONFIG_LRO_ENABLE		0
 #define CONFIG_RSS_ENABLE		0
+#define CONFIG_OFFLOAD_ENABLE		0
 #define CONFIG_L3_FILTER_ENABLE		0
 
 #define HW_ATL_RSS_HASHKEY_SIZE			40
@@ -178,6 +180,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  HW_ATL_MIF_CMD_BUSY				0x00000100
 #define HW_ATL_MIF_ADDR				0x0208
 #define HW_ATL_MIF_VAL				0x020c
+
 #define HW_ATL_GLB_CPU_SCRATCH_SCP_ADR(i)	(0x0300 + (i) * 4)
 
 #define FW2X_LED_MIN_VERSION			0x03010026	/* require 3.1.38 */
@@ -197,13 +200,13 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define   FW2X_STATUSLED_ORANGE_GREEN_BLINK	8
 #define   FW2X_STATUSLED_GREEN_BLINK		10
 
+#define HW_ATL_FW1X_0X370_ADR			0x0370
+#define HW_ATL_FW1X_MPI_EFUSE_ADDR		0x0374
+
+#define HW_ATL_FW2X_MPI_MBOX_ADDR		0x0360
 #define HW_ATL_FW2X_MPI_EFUSE_ADDR		0x0364
 #define FW2X_MPI_CONTROL_ADDR			0x0368	/* 64bit */
-//#define FW2X_MPI_CONTROL2_ADDR  		0x036c
 #define FW2X_MPI_STATE_ADDR			0x0370	/* 64bit */
-//#define FW2X_MPI_STATE2_ADDR			0x0374
-#define HW_ATL_UCP_0X370_REG			FW2X_MPI_STATE_ADDR
-#define HW_ATL_FW1X_MPI_EFUSE_ADDR		0x0374
 #define HW_ATL_MPI_BOOT_EXIT_CODE		0x0388
 #define   RBL_STATUS_DEAD				0x0000dead
 #define   RBL_STATUS_SUCCESS				0x0000abba
@@ -359,7 +362,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_RSS_KEY_ADDR_MSK			__BITS(4,0)
 #define  RPF_RSS_KEY_WR_EN			__BIT(5)
 #define RPF_RSS_KEY_WR_DATA_ADR			0x54d4
-//#define RPF_RSS_KEY_RD_DATA_ADR			0x54d8
+#define RPF_RSS_KEY_RD_DATA_ADR			0x54d8
 
 #define RPF_RSS_REDIR_ADDR_ADR			0x54e0
 #define  RPF_RSS_REDIR_ADDR_MSK			__BITS(3,0)
@@ -942,9 +945,10 @@ struct aq_softc {
 	bool sc_intr_moderation_enable;
 	bool sc_lro_enable;
 	bool sc_rss_enable;
+	bool sc_offload_enable;
 	bool sc_l3_filter_enable;
 
-	uint8_t sc_rss_key[HW_ATL_RSS_HASHKEY_SIZE];
+	uint32_t sc_rss_key[HW_ATL_RSS_HASHKEY_SIZE / sizeof(uint32_t)];
 	uint8_t sc_rss_table[HW_ATL_RSS_INDIRECTION_TABLE_MAX];
 
 	int sc_media_active;
@@ -1001,6 +1005,9 @@ static void aq_initmedia(struct aq_softc *);
 static int aq_mediachange(struct ifnet *);
 static void aq_enable_intr(struct aq_softc *, bool, bool);
 
+#ifdef USE_CALLOUT_TICK
+static void aq_tick(void *);
+#endif
 static int aq_intr(void *);
 #ifdef  XXX_INTR_DEBUG
 static int aq_tx_intr_poll(struct aq_txring *);
@@ -1205,6 +1212,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	sc->sc_intr_moderation_enable = CONFIG_INTR_MODERATION_ENABLE;
 	sc->sc_lro_enable = CONFIG_LRO_ENABLE;
 	sc->sc_rss_enable = CONFIG_RSS_ENABLE;
+	sc->sc_offload_enable = CONFIG_OFFLOAD_ENABLE;
 	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_ENABLE;
 
 	sc->sc_txringnum = AQ_TXRING_NUM;
@@ -1278,6 +1286,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_stats != NULL &&
 	    (sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[0]) == 0)) {
 		sc->sc_statistics_enable = true;
+		aprint_debug_dev(self, "Statistics supported\n");
 	}
 
 #ifdef USE_CALLOUT_TICK
@@ -1618,23 +1627,19 @@ aq_hw_init_ucp(struct aq_softc *sc)
 	int timo;
 
 	if (FW_VERSION_MAJOR(sc) == 1) {
-		if (AQ_READ_REG(sc, HW_ATL_UCP_0X370_REG) == 0) {
+		if (AQ_READ_REG(sc, HW_ATL_FW1X_0X370_ADR) == 0) {
 			uint32_t data;
 			cprng_fast(&data, sizeof(data));
 			data &= 0xfefefefe;
 			data |= 0x02020202;
-			AQ_WRITE_REG(sc, HW_ATL_UCP_0X370_REG, data);
+			AQ_WRITE_REG(sc, HW_ATL_FW1X_0X370_ADR, data);
 		}
 		AQ_WRITE_REG(sc, HW_ATL_GLB_CPU_SCRATCH_SCP_ADR(25), 0);
 	}
 
 	for (timo = 100; timo > 0; timo--) {
-		/*
-		 * XXX: linux uses (25), FreeBSD uses (24).
-		 * I don't know which is correct...
-		 */
 		sc->sc_mbox_addr =
-		    AQ_READ_REG(sc, HW_ATL_GLB_CPU_SCRATCH_SCP_ADR(25));
+		    AQ_READ_REG(sc, HW_ATL_FW2X_MPI_MBOX_ADDR);
 		if (sc->sc_mbox_addr != 0)
 			break;
 		delay(1000);
@@ -2326,23 +2331,12 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 {
 	int i;
 
-	/* Rx TC/RSS number config */
+	/* clear setting */
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_ADR, RPB_RPF_RX_TC_MODE, 0);
-
-	/* Rx flow control */
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_ADR, RPB_RPF_RX_FC_MODE, 0);
-
-	/* RSS Ring selection */
 	AQ_WRITE_REG(sc, RX_FLR_RSS_CONTROL1_ADR, 0);
-
-//	/* clear L2 ethertype RSS filter */
-//	for (i = 0; i < 32; i++) {
-//		AQ_WRITE_REG_BIT(sc, RPF_ET_ENF_ADR(i), RPF_ET_ENF_MSK, 0);
-//		AQ_WRITE_REG_BIT(sc, RPF_ET_ENF_ADR(i), RPF_ET_VALF_MSK, 0);
-//		AQ_WRITE_REG_BIT(sc, RPF_ET_ENF_ADR(i), RPF_ET_UPFEN_MSK, 0);
-//		AQ_WRITE_REG_BIT(sc, RPF_ET_ENF_ADR(i), RPF_ET_UPF_MSK, 0);
-//		AQ_WRITE_REG_BIT(sc, RPF_ET_ENF_ADR(1), RPF_ET_ACTF_MSK, 1);
-//	}
+	for (i = 0; i < 32; i++)
+		AQ_WRITE_REG_BIT(sc, RPF_ET_ENF_ADR(i), RPF_ET_ENF_MSK, 0);
 
 	if (sc->sc_rss_enable) {
 		/* Rx TC/RSS number config */
@@ -2485,12 +2479,10 @@ aq_hw_offload_set(struct aq_softc *sc)
 	AQ_WRITE_REG(sc, TDM_LSO_EN_ADR, 0xffffffff);
 
 #define HW_ATL_B0_LRO_RXD_MAX	16
-#define HW_ATL_B0_RINGS_MAX	32
 	v = (8 < HW_ATL_B0_LRO_RXD_MAX) ? 3 :
 	    (4 < HW_ATL_B0_LRO_RXD_MAX) ? 2 :
 	    (2 < HW_ATL_B0_LRO_RXD_MAX) ? 1 : 0;
-
-	for (i = 0; i < HW_ATL_B0_RINGS_MAX; i++) {
+	for (i = 0; i < AQ_RINGS_MAX; i++) {
 		AQ_WRITE_REG_BIT(sc, RPO_LRO_LDES_MAX_ADR(i), RPO_LRO_LDES_MAX_MSK(i), v);
 	}
 
@@ -2520,25 +2512,38 @@ aq_init_rsstable(struct aq_softc *sc)
 
 	/* initialize RSS key and redirect table */
 	cprng_fast(&sc->sc_rss_key, sizeof(sc->sc_rss_key));
-	for (i = 0; i < HW_ATL_RSS_HASHKEY_SIZE; i++) {
-		sc->sc_rss_table[i] = i % sc->sc_rxringnum;
+	for (i = 0; i < HW_ATL_RSS_INDIRECTION_TABLE_MAX; i++) {
+//		sc->sc_rss_table[i] = i % sc->sc_rxringnum;
+		sc->sc_rss_table[i] = 1;
 	}
+
+#ifdef XXX_DUMP_RSS_KEY
+	printf("rss_key:");
+	for (i = 0; i < HW_ATL_RSS_HASHKEY_SIZE; i++) {
+		printf(" %08x", sc->sc_rss_key[i]);
+	}
+	printf("\n");
+
+	printf("rss_table:");
+	for (i = 0; i < HW_ATL_RSS_INDIRECTION_TABLE_MAX; i++) {
+		printf(" %d", sc->sc_rss_table[i]);
+	}
+	printf("\n");
+#endif
+
 }
 
 static int
 aq_hw_rss_hash_set(struct aq_softc *sc)
 {
-	uint32_t rss_key_dw[HW_ATL_RSS_HASHKEY_SIZE / 4];
-	unsigned int i, addr;
+	unsigned int i;
 	int error = 0;
 
-	memcpy(rss_key_dw, sc->sc_rss_key, sizeof(rss_key_dw));
-
-	for (i = 10, addr = 0; i--; ++addr) {
-		uint32_t key_data = sc->sc_rss_enable ? bswap32(rss_key_dw[i]) : 0;
+	for (i = 0; i < __arraycount(sc->sc_rss_key); i++) {
+		uint32_t key_data = sc->sc_rss_enable ? sc->sc_rss_key[i] : 0;
 
 		AQ_WRITE_REG(sc, RPF_RSS_KEY_WR_DATA_ADR, key_data);
-		AQ_WRITE_REG_BIT(sc, RPF_RSS_KEY_ADDR_ADR, RPF_RSS_KEY_ADDR_MSK, addr);
+		AQ_WRITE_REG_BIT(sc, RPF_RSS_KEY_ADDR_ADR, RPF_RSS_KEY_ADDR_MSK, i);
 		AQ_WRITE_REG_BIT(sc, RPF_RSS_KEY_ADDR_ADR, RPF_RSS_KEY_WR_EN, 1);
 		WAIT_FOR(AQ_READ_REG_BIT(sc, RPF_RSS_KEY_ADDR_ADR, RPF_RSS_KEY_WR_EN) == 0,
 		    1000, 10, &error);
@@ -2583,21 +2588,23 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 
 	/* clear all filter */
 	for (i = 0; i < 8; i++) {
-		AQ_WRITE_REG(sc, RPF_L3_CTRL_REG(i), 0);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(i), RPF_L3_L4_ENABLE, 0);
 	}
 
-	/*
-	 * HW bug workaround:
-	 * Disable RSS for UDP using rx flow filter 0.
-	 * HW does not track RSS stream for fragmenged UDP,
-	 * 0x5040 control reg does not work.
-	 */
-	AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_ENABLE, 1);
-	AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_PROTO_ENABLE, 1);
-	AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_PROTO, RPF_L3_L4_PROTF_UDP);
-	AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_RXQUEUE_ENABLE, 1);
-	AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_RXQUEUE, 0);
-	AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_ACTION, RPF_L3_L4_ACTION_HOST);
+	if (!enable) {
+		/*
+		 * HW bug workaround:
+		 * Disable RSS for UDP using rx flow filter 0.
+		 * HW does not track RSS stream for fragmenged UDP,
+		 * 0x5040 control reg does not work.
+		 */
+		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_ENABLE, 1);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_PROTO_ENABLE, 1);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_PROTO, RPF_L3_L4_PROTF_UDP);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_RXQUEUE_ENABLE, 1);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_RXQUEUE, 0);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_CTRL_REG(0), RPF_L3_L4_ACTION, RPF_L3_L4_ACTION_HOST);
+	}
 }
 
 static void
@@ -3290,7 +3297,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 	int i;
 	int error = 0;
 
-	/* disable DMA once */
+	/* disable DMA */
 	AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_ENABLE, 0);
 
 	/* free all RX mbufs */
@@ -3337,8 +3344,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 		AQ_WRITE_REG_BIT(sc, RDM_DCAD_ADR(ringidx), RDM_DCAD_HEADER_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RDM_DCAD_ADR(ringidx), RDM_DCAD_PAYLOAD_EN, 0);
 
-
-		/* rxring_start: start receiving */
+		/* enable DMA. start receiving */
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_LEN_ADR(ringidx), RX_DMA_DESC_ENABLE, 1);
 	}
 
