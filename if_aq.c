@@ -162,9 +162,9 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define CONFIG_INTR_MODERATION_ENABLE	1	/* ok */
 
-#define CONFIG_LRO_ENABLE		0
+#define CONFIG_LRO_ENABLE		1
 #define CONFIG_RSS_ENABLE		0
-#define CONFIG_OFFLOAD_ENABLE		0
+#define CONFIG_OFFLOAD_ENABLE		1
 #define CONFIG_L3_FILTER_ENABLE		0
 
 #define AQ_RSS_HASHKEY_SIZE			40
@@ -175,8 +175,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  AQ_SOFTRESET_RESET			__BIT(15) /* soft reset bit */
 #define  AQ_SOFTRESET_DISABLE			__BIT(14) /* reset disable */
 
-#define AQ_FW_VERSION				0x0018
-#define AQ_HW_REVISION				0x001c
+#define AQ_FW_VERSION_REG			0x0018
+#define AQ_HW_REVISION_REG			0x001c
 #define FW_GLB_NVR_INTERFACE1_REG		0x0100
 
 #define AQ_FW_MBOX_CMD_REG			0x0200
@@ -207,7 +207,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define FW1X_0X370_REG				0x0370
 #define FW1X_MPI_EFUSEADDR_REG			0x0374
 
-#define FW2X_MPI_MBOX_ADDR			0x0360
+#define FW2X_MPI_MBOX_ADDR_REG			0x0360
 #define FW2X_MPI_EFUSEADDR_REG			0x0364
 #define FW2X_MPI_CONTROL_REG			0x0368	/* 64bit */
 #define FW2X_MPI_STATE_REG			0x0370	/* 64bit */
@@ -226,7 +226,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define FW_GLB_GENERAL_PROVISIONING9_REG	0x0520
 #define FW_GLB_NVR_PROVISIONING2_REG		0x0534
 
-#define FW_DAISY_CHAIN_STATUS			0x0704
+#define FW_DAISY_CHAIN_STATUS_REG		0x0704
 
 #define AQ_PCI_REG_CONTROL_6_REG		0x1014
 
@@ -269,7 +269,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_TPO_RPF_SYS_LOOPBACK		__BIT(8)
 #define  RX_REG_RESET_DIS			__BIT(29)
 
-#define RX_TCP_RSS_HASH				0x5040
+#define RX_TCP_RSS_HASH_REG			0x5040
 
 /* for RPF_*_REG[ACTION] */
 #define RPF_ACTION_DISCARD			0
@@ -321,8 +321,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_ETHERTYPE_FILTER_UPF		__BITS(28,26)
 #define  RPF_ETHERTYPE_FILTER_RXQF		__BITS(24,20)
 #define  RPF_ETHERTYPE_FILTER_MNG_RXQF		__BIT(19)
-#define  RPF_ETHERTYPE_FILTER_ACTF		__BITS(18,16)
-#define  RPF_ETHERTYPE_FILTER_VALF		__BITS(15,0)
+#define  RPF_ETHERTYPE_FILTER_ACTION		__BITS(18,16)
+#define  RPF_ETHERTYPE_FILTER_VAL		__BITS(15,0)
 
 #define RPF_L3_FILTER_REG(f)			(0x5380 + (f) * 4)	/* RPF_L3_FILTER_REG[8] */
 #define  RPF_L3_FILTER_L4_EN			__BIT(31)
@@ -377,7 +377,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPO_LRO_CONF_QSESSION_LIMIT		__BITS(13,12)
 #define  RPO_LRO_CONF_TOTAL_DESC_LIMIT		__BITS(6,5)
 #define  RPO_LRO_CONF_PATCHOPTIMIZATION_EN	__BIT(15)
-#define  RPO_LRO_CONF_MIN_PAY_OF_FIRST_PKT	__BITS(4,0)
+#define  RPO_LRO_CONF_MIN_PAYLOAD_OF_FIRST_PKT	__BITS(4,0)
 #define RPO_LRO_RSC_MAX_REG			0x5598
 #define RPO_LRO_LDES_MAX_REG(i)			(0x55a0 + (i / 8) * 4)
 #define  RPO_LRO_LDES_MAX_MASK(i)		(0x00000003 << ((i & 7) * 4))
@@ -441,7 +441,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RX_DMA_DCA_EN				__BIT(31)
 #define  RX_DMA_DCA_MODE			__BITS(3,0)
 
-//counters
+/* counters */
 #define RX_DMA_GOOD_PKT_COUNTERLSW		0x6800
 #define RX_DMA_GOOD_OCTET_COUNTERLSW		0x6808
 #define RX_DMA_DROP_PKT_CNT_REG			0x6818
@@ -451,6 +451,9 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TPB_DMA_SYS_LOOPBACK			__BIT(6)
 #define  TPB_TPO_PKT_SYS_LOOPBACK		__BIT(7)
 #define  TX_REG_RESET_DIS			__BIT(29)
+
+#define TX_TPO2_REG				0x7040
+#define  TX_TPO2_EN				__BIT(16)
 
 #define TPS_DESC_VM_ARB_MODE_REG		0x7300
 #define  TPS_DESC_VM_ARB_MODE			__BIT(0)
@@ -1442,7 +1445,7 @@ mac_soft_reset_flb(struct aq_softc *sc)
 		uint32_t flb_status;
 		for (timo = 0; timo < 1000; timo++) {
 			flb_status = AQ_READ_REG(sc,
-			    FW_DAISY_CHAIN_STATUS) & 0x10;
+			    FW_DAISY_CHAIN_STATUS_REG) & 0x10;
 			if (flb_status != 0)
 				break;
 			msec_delay(1);
@@ -1468,7 +1471,7 @@ mac_soft_reset_flb(struct aq_softc *sc)
 	global_software_reset(sc);
 
 	for (timo = 0; timo < 1000; timo++) {
-		if (AQ_READ_REG(sc, AQ_FW_VERSION) != 0)
+		if (AQ_READ_REG(sc, AQ_FW_VERSION_REG) != 0)
 			break;
 		msec_delay(10);
 	}
@@ -1498,7 +1501,7 @@ aq_fw_read_version(struct aq_softc *sc)
 	int i, error = EBUSY;
 #define MAC_FW_START_TIMEOUT_MS	10000
 	for (i = 0; i < MAC_FW_START_TIMEOUT_MS; i++) {
-		sc->sc_fw_version = AQ_READ_REG(sc, AQ_FW_VERSION);
+		sc->sc_fw_version = AQ_READ_REG(sc, AQ_FW_VERSION_REG);
 		if (sc->sc_fw_version != 0) {
 			error = 0;
 			break;
@@ -1514,10 +1517,10 @@ aq_fw_reset(struct aq_softc *sc)
 	uint32_t ver, v, bootExitCode;
 	int i, error;
 
-	ver = AQ_READ_REG(sc, AQ_FW_VERSION);
+	ver = AQ_READ_REG(sc, AQ_FW_VERSION_REG);
 
 	for (i = 1000; i > 0; i--) {
-		v = AQ_READ_REG(sc, FW_DAISY_CHAIN_STATUS);
+		v = AQ_READ_REG(sc, FW_DAISY_CHAIN_STATUS_REG);
 		bootExitCode = AQ_READ_REG(sc, FW_BOOT_EXIT_CODE_REG);
 		if (v != 0x06000000 || bootExitCode != 0)
 			break;
@@ -1624,7 +1627,7 @@ aq_hw_init_ucp(struct aq_softc *sc)
 
 	for (timo = 100; timo > 0; timo--) {
 		sc->sc_mbox_addr =
-		    AQ_READ_REG(sc, FW2X_MPI_MBOX_ADDR);
+		    AQ_READ_REG(sc, FW2X_MPI_MBOX_ADDR_REG);
 		if (sc->sc_mbox_addr != 0)
 			break;
 		delay(1000);
@@ -1667,7 +1670,7 @@ aq_fw_version_init(struct aq_softc *sc)
 	    FW_VERSION_MAJOR(sc), FW_VERSION_MINOR(sc), FW_VERSION_BUILD(sc));
 
 	/* detect revision */
-	uint32_t hwrev = AQ_READ_REG(sc, AQ_HW_REVISION);
+	uint32_t hwrev = AQ_READ_REG(sc, AQ_HW_REVISION_REG);
 	switch (hwrev & 0x0000000f) {
 	case 0x01:
 		aprint_verbose_dev(sc->sc_dev, "Atlantic revision A0, %s\n",
@@ -2290,7 +2293,7 @@ aq_hw_init_tx_path(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, THM_LSO_TCP_FLAG2_REG, THM_LSO_TCP_FLAG2_LAST,  0x0f7f);
 
 	/* misc */
-	AQ_WRITE_REG(sc, 0x7040, (sc->sc_features & FEATURES_TPO2) ? __BIT(16) : 0);
+	AQ_WRITE_REG(sc, TX_TPO2_REG, (sc->sc_features & FEATURES_TPO2) ? TX_TPO2_EN : 0);
 	AQ_WRITE_REG_BIT(sc, TDM_DCA_REG, TDM_DCA_EN, 0);
 	AQ_WRITE_REG_BIT(sc, TDM_DCA_REG, TDM_DCA_MODE, 0);
 
@@ -2338,9 +2341,9 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 
 	/* misc */
 	if (sc->sc_features & FEATURES_RPF2)
-		AQ_WRITE_REG(sc, RX_TCP_RSS_HASH, 0x000f001e);	/* XXX: linux:0x000f0000, freebsd:0x00f0001e */
+		AQ_WRITE_REG(sc, RX_TCP_RSS_HASH_REG, 0x000f001e);	/* XXX: linux:0x000f0000, freebsd:0x00f0001e */
 	else
-		AQ_WRITE_REG(sc, RX_TCP_RSS_HASH, 0);
+		AQ_WRITE_REG(sc, RX_TCP_RSS_HASH_REG, 0);
 
 	AQ_WRITE_REG_BIT(sc, RPF_L2BC_REG, RPF_L2BC_EN, 1);
 	AQ_WRITE_REG_BIT(sc, RPF_L2BC_REG, RPF_L2BC_ACTION, RPF_ACTION_HOST);
@@ -2470,7 +2473,7 @@ aq_hw_offload_set(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_QSESSION_LIMIT, 1);
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_TOTAL_DESC_LIMIT, 2);
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_PATCHOPTIMIZATION_EN, 0);
-	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_MIN_PAY_OF_FIRST_PKT, 10);
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_MIN_PAYLOAD_OF_FIRST_PKT, 10);
 	AQ_WRITE_REG(sc, RPO_LRO_RSC_MAX_REG, 1);
 	AQ_WRITE_REG(sc, RPO_LRO_ENABLE_REG, sc->sc_lro_enable ? 0xffffffff : 0);
 
