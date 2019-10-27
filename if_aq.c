@@ -48,6 +48,7 @@
 //#define XXX_DUMP_MACTABLE
 //#ifdef XXX_DUMP_RING
 #define XXX_DUMP_RSS_KEY
+//#define XXX_DEBUG_RSSKEY_ZERO
 
 //
 // terminology
@@ -176,17 +177,18 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define AQ_FW_VERSION				0x0018
 #define AQ_HW_REVISION				0x001c
-#define GLB_NVR_INTERFACE1_REG			0x0100
-#define HW_ATL_MIF_CMD				0x0200
-#define  HW_ATL_MIF_CMD_EXECUTE				0x00008000
-#define  HW_ATL_MIF_CMD_BUSY				0x00000100
-#define HW_ATL_MIF_ADDR				0x0208
-#define HW_ATL_MIF_VAL				0x020c
+#define FW_GLB_NVR_INTERFACE1_REG		0x0100
+
+#define AQ_FW_MBOX_CMD_REG			0x0200
+#define  AQ_FW_MBOX_CMD_EXECUTE			0x00008000
+#define  AQ_FW_MBOX_CMD_BUSY			0x00000100
+#define AQ_FW_MBOX_ADDR_REG			0x0208
+#define AQ_FW_MBOX_VAL_REG			0x020c
 
 #define FW_GLB_CPU_SCRATCH_SCP_REG(i)		(0x0300 + (i) * 4)
 
 #define FW2X_LED_MIN_VERSION			0x03010026	/* require 3.1.38 */
-#define FW2X_LED_ADDR				0x031c
+#define FW2X_LED_REG				0x031c
 #define  FW2X_LED_DEFAULT			0x00000000
 #define  FW2X_LED_NONE				0x0000003f
 #define  FW2X_LINKLED				__BITS(0,1)
@@ -203,30 +205,30 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define   FW2X_STATUSLED_GREEN_BLINK		10
 
 #define FW1X_0X370_REG				0x0370
-#define FW1X_MPI_EFUSE_ADDR			0x0374
+#define FW1X_MPI_EFUSEADDR_REG			0x0374
 
 #define FW2X_MPI_MBOX_ADDR			0x0360
-#define FW2X_MPI_EFUSE_ADDR			0x0364
-#define FW2X_MPI_CONTROL_ADDR			0x0368	/* 64bit */
-#define FW2X_MPI_STATE_ADDR			0x0370	/* 64bit */
-#define HW_ATL_MPI_BOOT_EXIT_CODE		0x0388
+#define FW2X_MPI_EFUSEADDR_REG			0x0364
+#define FW2X_MPI_CONTROL_REG			0x0368	/* 64bit */
+#define FW2X_MPI_STATE_REG			0x0370	/* 64bit */
+#define FW_BOOT_EXIT_CODE_REG			0x0388
 #define  RBL_STATUS_DEAD			0x0000dead
 #define  RBL_STATUS_SUCCESS			0x0000abba
 #define  RBL_STATUS_FAILURE			0x00000bad
 #define  RBL_STATUS_HOST_BOOT			0x0000f1a7
 
-#define HW_ATL_GLB_CPU_SEM_REG(i)		(0x03a0 + (i) * 4)
-#define  HW_ATL_FW_SM_RAM			2	// = 0x03a8
+#define FW_GLB_CPU_SEM_REG(i)			(0x03a0 + (i) * 4)
+#define FW_SEM_RAM_REG				FW_GLB_CPU_SEM_REG(2)
 
-#define HW_ATL_MCP_UP_FORCE_INTERRUPT_REG	0x0404
-#define GLB_CTL2_REG				0x0404
+#define FW_GLB_CTL2_REG				0x0404
+#define  FW_GLB_CTL2_MCP_UP_FORCE_INTERRUPT	__BIT(1)
 
-#define GLB_GENERAL_PROVISIONING9_REG		0x0520
-#define GLB_NVR_PROVISIONING2_REG		0x0534
+#define FW_GLB_GENERAL_PROVISIONING9_REG	0x0520
+#define FW_GLB_NVR_PROVISIONING2_REG		0x0534
 
-#define HW_ATL_MPI_DAISY_CHAIN_STATUS		0x0704
+#define FW_DAISY_CHAIN_STATUS			0x0704
 
-#define AQ_HW_PCI_REG_CONTROL_6_REG		0x1014
+#define AQ_PCI_REG_CONTROL_6_REG		0x1014
 
 // msix bitmap */
 #define AQ_INTR_STATUS_REG			0x2000	/* intr status */
@@ -244,7 +246,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  AQ_INTR_IRQ_MAP_RX_EN(rx)		(__BIT(15)     >> (((rx) & 1) * 8))
 
 #define AQ_GEN_INTR_MAP_REG(i)			(0x2180 + (i) * 4)
-#define  HW_ATL_B0_ERR_INT			8
+#define  AQ_B0_ERR_INT				8
 
 #define AQ_INTR_CTRL_REG			0x2300
 #define  AQ_INTR_CTRL_IRQMODE			__BITS(1,0)
@@ -257,7 +259,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  AQ_INTR_CTRL_RESET_DIS			__BIT(29)
 #define  AQ_INTR_CTRL_RESET_IRQ			__BIT(31)
 
-#define MIF_POWER_GATING_ENABLE_CONTROL_REG	0x32a8
+#define AQ_MBOXIF_POWER_GATING_CONTROL_REG	0x32a8
 
 #define MPI_RESETCTRL_REG			0x4000
 #define  MPI_RESETCTRL_RESET_DIS		__BIT(29)
@@ -267,7 +269,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_TPO_RPF_SYS_LOOPBACK		__BIT(8)
 #define  RX_REG_RESET_DIS			__BIT(29)
 
-#define HW_ATL_RX_TCP_RSS_HASH			0x5040
+#define RX_TCP_RSS_HASH				0x5040
 
 /* for RPF_*_REG[ACTION] */
 #define RPF_ACTION_DISCARD			0
@@ -287,7 +289,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_L2UC_MSW_MACADDR_HI		__BITS(15,0)
 #define  RPF_L2UC_MSW_ACTION			__BITS(18,16)
 #define  RPF_L2UC_MSW_EN			__BIT(31)
-#define AQ_HW_MAC			0	/* own address */
+#define AQ_HW_MAC			0	/* index of own address */
 #define AQ_HW_MAC_MIN			1
 #define AQ_HW_MAC_MAX			33
 
@@ -350,7 +352,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RX_FLR_RSS_CONTROL1_EN			__BIT(31)
 
 #define RPF_RPB_RX_TC_UPT_REG			0x54c4
-#define RPF_RPB_RX_TC_UPT_MASK(tc)		(0x00000007 << ((tc) * 4))
+#define  RPF_RPB_RX_TC_UPT_MASK(tc)		(0x00000007 << ((tc) * 4))
 
 #define RPF_RSS_KEY_ADDR_REG			0x54d0
 #define  RPF_RSS_KEY_ADDR			__BITS(4,0)
@@ -398,7 +400,6 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPB_RXB_XOFF_EN			__BIT(31)
 #define  RPB_RXB_XOFF_THRESH_HI			__BITS(29,16)
 #define  RPB_RXB_XOFF_THRESH_LO			__BITS(13,0)
-
 
 
 #define RX_DMA_DESC_CACHE_INIT_REG		0x5a00
@@ -1274,9 +1275,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 
 	/* get starting statistics values */
 	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_stats != NULL &&
-	    (sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[0]) == 0)) {
+	    sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[0]) == 0) {
 		sc->sc_statistics_enable = true;
-		aprint_debug_dev(self, "Statistics supported\n");
 	}
 
 #ifdef USE_CALLOUT_TICK
@@ -1346,23 +1346,23 @@ mac_soft_reset_rbl(struct aq_softc *sc, aq_fw_bootloader_mode_t *mode)
 
 	aprint_debug_dev(sc->sc_dev, "RBL> MAC reset STARTED!\n");
 
-	AQ_WRITE_REG(sc, HW_ATL_MCP_UP_FORCE_INTERRUPT_REG, 0x40e1);
-	AQ_WRITE_REG(sc, HW_ATL_GLB_CPU_SEM_REG(0), 1);
-	AQ_WRITE_REG(sc, MIF_POWER_GATING_ENABLE_CONTROL_REG, 0);
+	AQ_WRITE_REG(sc, FW_GLB_CTL2_REG, 0x40e1);
+	AQ_WRITE_REG(sc, FW_GLB_CPU_SEM_REG(0), 1);
+	AQ_WRITE_REG(sc, AQ_MBOXIF_POWER_GATING_CONTROL_REG, 0);
 
 	/* MAC FW will reload PHY FW if 1E.1000.3 was cleaned - #undone */
-	AQ_WRITE_REG(sc, HW_ATL_MPI_BOOT_EXIT_CODE, RBL_STATUS_DEAD);
+	AQ_WRITE_REG(sc, FW_BOOT_EXIT_CODE_REG, RBL_STATUS_DEAD);
 
 	global_software_reset(sc);
 
-	AQ_WRITE_REG(sc, GLB_CTL2_REG, 0x40e0);
+	AQ_WRITE_REG(sc, FW_GLB_CTL2_REG, 0x40e0);
 
 	/* Wait for RBL to finish boot process. */
 #define RBL_TIMEOUT_MS	10000
 	uint16_t rbl_status;
 	for (timo = RBL_TIMEOUT_MS; timo > 0; timo--) {
 		rbl_status =
-		    AQ_READ_REG(sc, HW_ATL_MPI_BOOT_EXIT_CODE) & 0xffff;
+		    AQ_READ_REG(sc, FW_BOOT_EXIT_CODE_REG) & 0xffff;
 		if (rbl_status != 0 && rbl_status != RBL_STATUS_DEAD)
 			break;
 		msec_delay(1);
@@ -1401,7 +1401,7 @@ mac_soft_reset_flb(struct aq_softc *sc)
 	uint32_t v;
 	int timo;
 
-	AQ_WRITE_REG(sc, GLB_CTL2_REG, 0x40e1);
+	AQ_WRITE_REG(sc, FW_GLB_CTL2_REG, 0x40e1);
 	/*
 	 * Let Felicity hardware to complete SMBUS transaction before
 	 * Global software reset.
@@ -1413,9 +1413,9 @@ mac_soft_reset_flb(struct aq_softc *sc)
 	 * global software reset may not clear SPI interface.
 	 * Clean it up manually before global reset.
 	 */
-	AQ_WRITE_REG(sc, GLB_NVR_PROVISIONING2_REG, 0x00a0);
-	AQ_WRITE_REG(sc, GLB_NVR_INTERFACE1_REG, 0x009f);
-	AQ_WRITE_REG(sc, GLB_NVR_INTERFACE1_REG, 0x809f);
+	AQ_WRITE_REG(sc, FW_GLB_NVR_PROVISIONING2_REG, 0x00a0);
+	AQ_WRITE_REG(sc, FW_GLB_NVR_INTERFACE1_REG, 0x009f);
+	AQ_WRITE_REG(sc, FW_GLB_NVR_INTERFACE1_REG, 0x809f);
 	msec_delay(50);
 
 	v = AQ_READ_REG(sc, AQ_SOFTRESET_REG);
@@ -1424,10 +1424,10 @@ mac_soft_reset_flb(struct aq_softc *sc)
 	AQ_WRITE_REG(sc, AQ_SOFTRESET_REG, v);
 
 	/* Kickstart. */
-	AQ_WRITE_REG(sc, GLB_CTL2_REG, 0x80e0);
-	AQ_WRITE_REG(sc, MIF_POWER_GATING_ENABLE_CONTROL_REG, 0);
+	AQ_WRITE_REG(sc, FW_GLB_CTL2_REG, 0x80e0);
+	AQ_WRITE_REG(sc, AQ_MBOXIF_POWER_GATING_CONTROL_REG, 0);
 	if (!sc->sc_fast_start_enabled)
-		AQ_WRITE_REG(sc, GLB_GENERAL_PROVISIONING9_REG, 1);
+		AQ_WRITE_REG(sc, FW_GLB_GENERAL_PROVISIONING9_REG, 1);
 
 	/*
 	 * For the case SPI burst transaction was interrupted (by MCP reset
@@ -1437,12 +1437,12 @@ mac_soft_reset_flb(struct aq_softc *sc)
 
 	/* MAC Kickstart */
 	if (!sc->sc_fast_start_enabled) {
-		AQ_WRITE_REG(sc, GLB_CTL2_REG, 0x180e0);
+		AQ_WRITE_REG(sc, FW_GLB_CTL2_REG, 0x180e0);
 
 		uint32_t flb_status;
 		for (timo = 0; timo < 1000; timo++) {
 			flb_status = AQ_READ_REG(sc,
-			    HW_ATL_MPI_DAISY_CHAIN_STATUS) & 0x10;
+			    FW_DAISY_CHAIN_STATUS) & 0x10;
 			if (flb_status != 0)
 				break;
 			msec_delay(1);
@@ -1455,14 +1455,14 @@ mac_soft_reset_flb(struct aq_softc *sc)
 		aprint_debug_dev(sc->sc_dev,
 		    "FLB> MAC kickstart done, %d ms\n", timo);
 		/* FW reset */
-		AQ_WRITE_REG(sc, GLB_CTL2_REG, 0x80e0);
+		AQ_WRITE_REG(sc, FW_GLB_CTL2_REG, 0x80e0);
 		/*
 		 * Let Felicity hardware complete SMBUS transaction before
 		 * Global software reset.
 		 */
 		msec_delay(50);
 	}
-	AQ_WRITE_REG(sc, HW_ATL_GLB_CPU_SEM_REG(0), 1);
+	AQ_WRITE_REG(sc, FW_GLB_CPU_SEM_REG(0), 1);
 
 	/* PHY Kickstart: #undone */
 	global_software_reset(sc);
@@ -1517,8 +1517,8 @@ aq_fw_reset(struct aq_softc *sc)
 	ver = AQ_READ_REG(sc, AQ_FW_VERSION);
 
 	for (i = 1000; i > 0; i--) {
-		v = AQ_READ_REG(sc, HW_ATL_MPI_DAISY_CHAIN_STATUS);
-		bootExitCode = AQ_READ_REG(sc, HW_ATL_MPI_BOOT_EXIT_CODE);
+		v = AQ_READ_REG(sc, FW_DAISY_CHAIN_STATUS);
+		bootExitCode = AQ_READ_REG(sc, FW_BOOT_EXIT_CODE_REG);
 		if (v != 0x06000000 || bootExitCode != 0)
 			break;
 	}
@@ -1603,12 +1603,7 @@ aq_hw_reset(struct aq_softc *sc)
 		return error;
 	}
 
-	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->reset != NULL)
-		error = sc->sc_fw_ops->reset(sc);
-	else
-		error = ENOTSUP;
-
-	return error;
+	return sc->sc_fw_ops->reset(sc);
 }
 
 static int
@@ -1751,7 +1746,7 @@ fw1x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
     aq_link_speed_t speed, aq_link_fc_t fc, aq_link_eee_t eee)
 {
 	printf("%s:%d: XXX: not implemented\n", __func__, __LINE__);
-	return -1;
+	return ENOSYS;
 }
 
 static int
@@ -1759,14 +1754,14 @@ fw1x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *mode,
     aq_link_speed_t *speed, aq_link_fc_t *fc, aq_link_eee_t *eee)
 {
 	printf("%s:%d: XXX: not implemented\n", __func__, __LINE__);
-	return -1;
+	return ENOSYS;
 }
 
 static int
 fw1x_get_stats(struct aq_softc *sc, aq_hw_stats_s_t *stats)
 {
 	printf("%s:%d: XXX: not implemented\n", __func__, __LINE__);
-	return -1;
+	return ENOSYS;
 }
 
 static int
@@ -1796,7 +1791,7 @@ static int
 fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
     aq_link_speed_t speed, aq_link_fc_t fc, aq_link_eee_t eee)
 {
-	uint64_t mpi_ctrl = AQ_READ64_REG(sc, FW2X_MPI_CONTROL_ADDR);
+	uint64_t mpi_ctrl = AQ_READ64_REG(sc, FW2X_MPI_CONTROL_REG);
 
 	switch (mode) {
 	case MPI_INIT:
@@ -1834,7 +1829,7 @@ fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
 		return EINVAL;
 	}
 
-	AQ_WRITE64_REG(sc, FW2X_MPI_CONTROL_ADDR, mpi_ctrl);
+	AQ_WRITE64_REG(sc, FW2X_MPI_CONTROL_REG, mpi_ctrl);
 	return 0;
 }
 
@@ -1842,10 +1837,10 @@ static int
 fw2x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *mode,
     aq_link_speed_t *speedp, aq_link_fc_t *fcp, aq_link_eee_t *eeep)
 {
-	uint64_t mpi_state = AQ_READ64_REG(sc, FW2X_MPI_STATE_ADDR);
+	uint64_t mpi_state = AQ_READ64_REG(sc, FW2X_MPI_STATE_REG);
 
 	if (mode != NULL) {
-		uint64_t mpi_ctrl = AQ_READ64_REG(sc, FW2X_MPI_CONTROL_ADDR);
+		uint64_t mpi_ctrl = AQ_READ64_REG(sc, FW2X_MPI_CONTROL_REG);
 		if (mpi_ctrl & FW2X_CTRL_RATE_MASK)
 			*mode = MPI_INIT;
 		else
@@ -1886,8 +1881,8 @@ static int
 toggle_mpi_ctrl_and_wait(struct aq_softc *sc, uint64_t mask,
     uint32_t timeout_ms, uint32_t try_count)
 {
-	uint64_t mpi_ctrl = AQ_READ64_REG(sc, FW2X_MPI_CONTROL_ADDR);
-	uint64_t mpi_state = AQ_READ64_REG(sc, FW2X_MPI_STATE_ADDR);
+	uint64_t mpi_ctrl = AQ_READ64_REG(sc, FW2X_MPI_CONTROL_REG);
+	uint64_t mpi_state = AQ_READ64_REG(sc, FW2X_MPI_STATE_REG);
 	int error;
 
 	/* First, check that control and state values are consistent */
@@ -1902,13 +1897,13 @@ toggle_mpi_ctrl_and_wait(struct aq_softc *sc, uint64_t mask,
 
 	/* Invert bits (toggle) in control register */
 	mpi_ctrl ^= mask;
-	AQ_WRITE64_REG(sc, FW2X_MPI_CONTROL_ADDR, mpi_ctrl);
+	AQ_WRITE64_REG(sc, FW2X_MPI_CONTROL_REG, mpi_ctrl);
 
 	/* Clear all bits except masked */
 	mpi_ctrl &= mask;
 
 	/* Wait for FW reflecting change in state register */
-	WAIT_FOR((AQ_READ64_REG(sc, FW2X_MPI_CONTROL_ADDR) & mask) == mpi_ctrl,
+	WAIT_FOR((AQ_READ64_REG(sc, FW2X_MPI_CONTROL_REG) & mask) == mpi_ctrl,
 	    1000 * timeout_ms, try_count, &error);
 	if (error != 0) {
 		device_printf(sc->sc_dev,
@@ -1955,11 +1950,11 @@ aq_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
 	uint32_t v;
 	int error = 0;
 
-	WAIT_FOR(AQ_READ_REG(sc, HW_ATL_GLB_CPU_SEM_REG(HW_ATL_FW_SM_RAM)) == 1,
+	WAIT_FOR(AQ_READ_REG(sc, FW_SEM_RAM_REG) == 1,
 	    1, 10000, &error);
 	if (error != 0) {
-		AQ_WRITE_REG(sc, HW_ATL_GLB_CPU_SEM_REG(HW_ATL_FW_SM_RAM), 1);
-		v = AQ_READ_REG(sc, HW_ATL_GLB_CPU_SEM_REG(HW_ATL_FW_SM_RAM));
+		AQ_WRITE_REG(sc, FW_SEM_RAM_REG, 1);
+		v = AQ_READ_REG(sc, FW_SEM_RAM_REG);
 		if (v == 0) {
 			device_printf(sc->sc_dev,
 			    "%s:%d: timeout\n", __func__, __LINE__);
@@ -1967,26 +1962,26 @@ aq_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
 		}
 	}
 
-	AQ_WRITE_REG(sc, HW_ATL_MIF_ADDR, addr);
+	AQ_WRITE_REG(sc, AQ_FW_MBOX_ADDR_REG, addr);
 
 	error = 0;
 	for (; cnt > 0 && error == 0; cnt--) {
 		/* execute mailbox interface */
-		AQ_WRITE_REG_BIT(sc, HW_ATL_MIF_CMD, HW_ATL_MIF_CMD_EXECUTE, 1);
+		AQ_WRITE_REG_BIT(sc, AQ_FW_MBOX_CMD_REG, AQ_FW_MBOX_CMD_EXECUTE, 1);
 		if (sc->sc_features & FEATURES_REV_B1) {
 			WAIT_FOR(
-			    AQ_READ_REG(sc, HW_ATL_MIF_ADDR) != addr,
+			    AQ_READ_REG(sc, AQ_FW_MBOX_ADDR_REG) != addr,
 			    1, 1000, &error);
 		} else {
 			WAIT_FOR(
-			    (AQ_READ_REG(sc, HW_ATL_MIF_CMD) &
-			    HW_ATL_MIF_CMD_BUSY) == 0,
+			    (AQ_READ_REG(sc, AQ_FW_MBOX_CMD_REG) &
+			    AQ_FW_MBOX_CMD_BUSY) == 0,
 			    1, 1000, &error);
 		}
-		*p++ = AQ_READ_REG(sc, HW_ATL_MIF_VAL);
+		*p++ = AQ_READ_REG(sc, AQ_FW_MBOX_VAL_REG);
 		addr += sizeof(uint32_t);
 	}
-	AQ_WRITE_REG(sc, HW_ATL_GLB_CPU_SEM_REG(HW_ATL_FW_SM_RAM), 1);
+	AQ_WRITE_REG(sc, FW_SEM_RAM_REG, 1);
 
 	if (error != 0)
 		device_printf(sc->sc_dev,
@@ -2005,9 +2000,9 @@ aq_get_mac_addr(struct aq_softc *sc)
 
 	efuse_shadow_addr = 0;
 	if (FW_VERSION_MAJOR(sc) >= 2)
-		efuse_shadow_addr = AQ_READ_REG(sc, FW2X_MPI_EFUSE_ADDR);
+		efuse_shadow_addr = AQ_READ_REG(sc, FW2X_MPI_EFUSEADDR_REG);
 	else
-		efuse_shadow_addr = AQ_READ_REG(sc, FW1X_MPI_EFUSE_ADDR);
+		efuse_shadow_addr = AQ_READ_REG(sc, FW1X_MPI_EFUSEADDR_REG);
 
 	if (efuse_shadow_addr == 0) {
 		aprint_error_dev(sc->sc_dev, "cannot get efuse addr\n");
@@ -2266,30 +2261,16 @@ aq_initmedia(struct aq_softc *sc)
 static int
 aq_set_linkmode(struct aq_softc *sc, aq_link_speed_t speed, aq_link_fc_t fc, aq_link_eee_t eee)
 {
-	int error;
-
-	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->set_mode != NULL) {
-		error = sc->sc_fw_ops->set_mode(sc, MPI_INIT, speed, fc, eee);
-	} else {
-		device_printf(sc->sc_dev, "%s: not supported by F/W\n", __func__);
-		error = ENOTSUP;
-	}
-	return error;
+	return sc->sc_fw_ops->set_mode(sc, MPI_INIT, speed, fc, eee);
 }
 
 static int
 aq_get_linkmode(struct aq_softc *sc, aq_link_speed_t *speed, aq_link_fc_t *fc, aq_link_eee_t *eee)
 {
 	aq_hw_fw_mpi_state_e_t mode;
-	int error = 0;
+	int error;
 
-	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_mode != NULL) {
-		error = sc->sc_fw_ops->get_mode(sc,
-		    &mode, speed, fc, eee);
-	} else {
-		device_printf(sc->sc_dev, "%s: not supported by F/W\n", __func__);
-		return ENOTSUP;
-	}
+	error = sc->sc_fw_ops->get_mode(sc, &mode, speed, fc, eee);
 	if (error != 0)
 		return error;
 	if (mode != MPI_INIT)
@@ -2325,8 +2306,9 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_REG, RPB_RPF_RX_TC_MODE, 0);
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_REG, RPB_RPF_RX_FC_MODE, 0);
 	AQ_WRITE_REG(sc, RX_FLR_RSS_CONTROL1_REG, 0);
-	for (i = 0; i < 32; i++)
+	for (i = 0; i < 32; i++) {
 		AQ_WRITE_REG_BIT(sc, RPF_ETHERTYPE_FILTER_REG(i), RPF_ETHERTYPE_FILTER_EN, 0);
+	}
 
 	if (sc->sc_rss_enable) {
 		/* Rx TC/RSS number config */
@@ -2356,9 +2338,9 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 
 	/* misc */
 	if (sc->sc_features & FEATURES_RPF2)
-		AQ_WRITE_REG(sc, HW_ATL_RX_TCP_RSS_HASH, 0x000f001e);	/* XXX: linux:0x000f0000, freebsd:0x00f0001e */
+		AQ_WRITE_REG(sc, RX_TCP_RSS_HASH, 0x000f001e);	/* XXX: linux:0x000f0000, freebsd:0x00f0001e */
 	else
-		AQ_WRITE_REG(sc, HW_ATL_RX_TCP_RSS_HASH, 0);
+		AQ_WRITE_REG(sc, RX_TCP_RSS_HASH, 0);
 
 	AQ_WRITE_REG_BIT(sc, RPF_L2BC_REG, RPF_L2BC_EN, 1);
 	AQ_WRITE_REG_BIT(sc, RPF_L2BC_REG, RPF_L2BC_ACTION, RPF_ACTION_HOST);
@@ -2468,10 +2450,10 @@ aq_hw_offload_set(struct aq_softc *sc)
 	/* LSO offloads*/
 	AQ_WRITE_REG(sc, TDM_LSO_EN_REG, 0xffffffff);
 
-#define HW_ATL_B0_LRO_RXD_MAX	16
-	v = (8 < HW_ATL_B0_LRO_RXD_MAX) ? 3 :
-	    (4 < HW_ATL_B0_LRO_RXD_MAX) ? 2 :
-	    (2 < HW_ATL_B0_LRO_RXD_MAX) ? 1 : 0;
+#define AQ_B0_LRO_RXD_MAX	16
+	v = (8 < AQ_B0_LRO_RXD_MAX) ? 3 :
+	    (4 < AQ_B0_LRO_RXD_MAX) ? 2 :
+	    (2 < AQ_B0_LRO_RXD_MAX) ? 1 : 0;
 	for (i = 0; i < AQ_RINGS_MAX; i++) {
 		AQ_WRITE_REG_BIT(sc, RPO_LRO_LDES_MAX_REG(i), RPO_LRO_LDES_MAX_MASK(i), v);
 	}
@@ -2485,12 +2467,10 @@ aq_hw_offload_set(struct aq_softc *sc)
 	 * the default value 250 uS
 	 */
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_MAX_COALESCING_IVAL_REG, RPO_LRO_MAX_COALESCING_IVAL, 50);
-
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_QSESSION_LIMIT, 1);
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_TOTAL_DESC_LIMIT, 2);
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_PATCHOPTIMIZATION_EN, 0);
 	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_MIN_PAY_OF_FIRST_PKT, 10);
-
 	AQ_WRITE_REG(sc, RPO_LRO_RSC_MAX_REG, 1);
 	AQ_WRITE_REG(sc, RPO_LRO_ENABLE_REG, sc->sc_lro_enable ? 0xffffffff : 0);
 
@@ -2503,7 +2483,13 @@ aq_init_rsstable(struct aq_softc *sc)
 	unsigned int i;
 
 	/* initialize RSS key and redirect table */
+
 	cprng_fast(&sc->sc_rss_key, sizeof(sc->sc_rss_key));
+#if XXX_DEBUG_RSSKEY_ZERO
+	memset(&sc->sc_rss_key, 0, sizeof(sc->sc_rss_key));
+#endif
+
+
 	for (i = 0; i < AQ_RSS_INDIRECTION_TABLE_MAX; i++) {
 		sc->sc_rss_table[i] = i % sc->sc_rxringnum;
 	}
@@ -2593,7 +2579,7 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_PROTO_EN, 1);
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_PROTO, RPF_L3_FILTER_L4_PROTF_UDP);
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_RXQUEUE_EN, 1);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_RXQUEUE, 1);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_RXQUEUE, 0);	/* -> rxring[0] */
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_ACTION, RPF_ACTION_HOST);
 	}
 }
@@ -2663,8 +2649,8 @@ aq_hw_init(struct aq_softc *sc)
 	uint32_t v;
 
 	/* Force limit MRRS on RDM/TDM to 2K */
-	v = AQ_READ_REG(sc, AQ_HW_PCI_REG_CONTROL_6_REG);
-	AQ_WRITE_REG(sc, AQ_HW_PCI_REG_CONTROL_6_REG,
+	v = AQ_READ_REG(sc, AQ_PCI_REG_CONTROL_6_REG);
+	AQ_WRITE_REG(sc, AQ_PCI_REG_CONTROL_6_REG,
 	    (v & ~0x0707) | 0x0404);
 
 	/*
@@ -2700,8 +2686,8 @@ aq_hw_init(struct aq_softc *sc)
 	AQ_WRITE_REG(sc, AQ_INTR_AUTOMASK_REG, 0xffffffff);
 
 	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_REG(0),
-	    ((HW_ATL_B0_ERR_INT << 24) | (1 << 31)) |
-	    ((HW_ATL_B0_ERR_INT << 16) | (1 << 23))
+	    ((AQ_B0_ERR_INT << 24) | (1 << 31)) |
+	    ((AQ_B0_ERR_INT << 16) | (1 << 23))
 	);
 
 	/* link interrupt */
