@@ -41,7 +41,8 @@
 //#define XXX_FORCE_32BIT_PA
 //#define XXX_DEBUG_PMAP_EXTRACT
 #define USE_CALLOUT_TICK
-#define XXX_INTR_DEBUG
+//#define XXX_DUMP_STAT
+//#define XXX_INTR_DEBUG
 //#define XXX_RXINTR_DEBUG
 //#define XXX_DUMP_RX_COUNTER
 //#define XXX_DUMP_RX_MBUF
@@ -162,9 +163,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define CONFIG_INTR_MODERATION_ENABLE	1	/* ok */
 
-#define CONFIG_LRO_ENABLE		1
 #define CONFIG_RSS_ENABLE		0
-#define CONFIG_OFFLOAD_ENABLE		1
+#define CONFIG_OFFLOAD_ENABLE		0
 #define CONFIG_L3_FILTER_ENABLE		0
 
 #define AQ_RSS_HASHKEY_SIZE			40
@@ -367,9 +367,9 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define RPF_RSS_REDIR_WR_DATA_REG		0x54e4
 #define  RPF_RSS_REDIR_WR_DATA			__BITS(15,0)
 
-#define RPO_IPV4_REG				0x5580
-#define  RPO_IPV4_CHK_EN			__BIT(1)
-#define  RPO_IPV4_L4_CHECK_EN			__BIT(0)	/* TCP, UDP */
+#define RPO_HWCSUM_REG				0x5580
+#define  RPO_HWCSUM_IP4CSUM_EN			__BIT(1)
+#define  RPO_HWCSUM_L4CSUM_EN			__BIT(0)	/* TCP, UDP */
 
 #define RPO_LRO_ENABLE_REG			0x5590
 
@@ -477,9 +477,9 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_HW_RXBUF_MAX		320
 
 
-#define TPO_IPV4_REG				0x7800
-#define  TPO_IPV4_CHK_EN			__BIT(1)
-#define  TPO_IPV4_L4_CHECK_EN			__BIT(0)	/* TCP,UDP */
+#define TPO_HWCSUM_REG				0x7800
+#define  TPO_HWCSUM_IP4CSUM_EN			__BIT(1)
+#define  TPO_HWCSUM_L4CSUM_EN			__BIT(0)	/* TCP,UDP */
 
 #define TDM_LSO_EN_REG				0x7810
 
@@ -767,27 +767,42 @@ struct aq_rx_desc_read {
 
 struct aq_rx_desc_wb {
 	uint32_t type;
-#define RXDESC_TYPE_RSS			__BITS(3,0)
-#define RXDESC_TYPE_PKTTYPE		__BITS(4,11)
-#define  RXDESC_TYPE_PKTTYPE_NONE		0x00
-#define  RXDESC_TYPE_PKTTYPE_IPV4		0x02
-#define  RXDESC_TYPE_PKTTYPE_IPV6		0x03
-#define  RXDESC_TYPE_PKTTYPE_IPV4_TCP		0x04
-#define  RXDESC_TYPE_PKTTYPE_IPV6_TCP		0x05
-#define  RXDESC_TYPE_PKTTYPE_IPV4_UDP		0x06
-#define  RXDESC_TYPE_PKTTYPE_IPV6_UDP		0x07
-#define  RXDESC_TYPE_PKTTYPE_VLAN		0x20	/* flag */
-#define  RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE	0x40	/* flag */
+#define RXDESC_TYPE_RSSTYPE		__BITS(3,0)
+#define  RXDESC_TYPE_RSSTYPE_NONE		0
+#define  RXDESC_TYPE_RSSTYPE_IPV4		2
+#define  RXDESC_TYPE_RSSTYPE_IPV6		3
+#define  RXDESC_TYPE_RSSTYPE_IPV4_TCP		4
+#define  RXDESC_TYPE_RSSTYPE_IPV6_TCP		5
+#define  RXDESC_TYPE_RSSTYPE_IPV4_UDP		6
+#define  RXDESC_TYPE_RSSTYPE_IPV6_UDP		7
+#define RXDESC_TYPE_PKTTYPE_ETHER	__BITS(5,4)
+#define  RXDESC_TYPE_PKTTYPE_ETHER_IPV4		0
+#define  RXDESC_TYPE_PKTTYPE_ETHER_IPV6		1
+#define  RXDESC_TYPE_PKTTYPE_ETHER_OTHERS	2
+#define  RXDESC_TYPE_PKTTYPE_ETHER_ARP		3
+#define RXDESC_TYPE_PKTTYPE_PROTO	__BITS(8,6)
+#define RXDESC_TYPE_PKTTYPE_PROTO_TCP		0
+#define RXDESC_TYPE_PKTTYPE_PROTO_UDP		1
+#define RXDESC_TYPE_PKTTYPE_PROTO_SCTP		2
+#define RXDESC_TYPE_PKTTYPE_PROTO_ICMP		3
+#define RXDESC_TYPE_PKTTYPE_PROTO_OTHERS	4
+#define RXDESC_TYPE_PKTTYPE_VLAN	__BIT(9)
+#define RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE	__BIT(10)
 #define RXDESC_TYPE_RDM_ERR		__BIT(12)
-#define RXDESC_TYPE_RESERVED		__BITS(13,18)
-#define RXDESC_TYPE_CNTL		__BITS(19,20)
+#define RXDESC_TYPE_RESERVED		__BITS(18,13)
+#define RXDESC_TYPE_IPV4_CSUM_CHECKED	__BIT(19)	// (PKTTYPE_L3 == 0)
+#define RXDESC_TYPE_TCPUDP_CSUM_CHECKED	__BIT(20)
 #define RXDESC_TYPE_SPH			__BIT(21)
-#define RXDESC_TYPE_HDR_LEN		__BITS(22,31)
+#define RXDESC_TYPE_HDR_LEN		__BITS(31,22)
 	uint32_t rss_hash;
 	uint16_t status;
 #define RXDESC_STATUS_DD		__BIT(0)
 #define RXDESC_STATUS_EOP		__BIT(1)
 #define RXDESC_STATUS_MAC_DMA_ERR	__BIT(2)
+#define RXDESC_STATUS_L3_CSUM_NG	__BIT(3)
+#define RXDESC_STATUS_L4_CSUM_ERROR	__BIT(4)
+#define RXDESC_STATUS_L4_CSUM_OK	__BIT(5)
+
 #define RXDESC_STATUS_STAT		__BITS(2,5)
 #define RXDESC_STATUS_ESTAT		__BITS(6,11)
 #define RXDESC_STATUS_RSC_CNT		__BITS(12,15)
@@ -937,7 +952,6 @@ struct aq_softc {
 	bool sc_flash_present;
 
 	bool sc_intr_moderation_enable;
-	bool sc_lro_enable;
 	bool sc_rss_enable;
 	bool sc_offload_enable;
 	bool sc_l3_filter_enable;
@@ -1021,6 +1035,7 @@ static int aq_hw_reset(struct aq_softc *);
 static int aq_fw_downld_dwords(struct aq_softc *, uint32_t, uint32_t *, uint32_t);
 static int aq_get_mac_addr(struct aq_softc *);
 static void aq_init_rsstable(struct aq_softc *);
+static int aq_set_capability(struct aq_softc *);
 
 static int fw1x_reset(struct aq_softc *);
 static int fw1x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t,
@@ -1204,7 +1219,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 	aprint_normal_dev(self, "interrupting at %s\n", intrstr);
 
 	sc->sc_intr_moderation_enable = CONFIG_INTR_MODERATION_ENABLE;
-	sc->sc_lro_enable = CONFIG_LRO_ENABLE;
 	sc->sc_rss_enable = CONFIG_RSS_ENABLE;
 	sc->sc_offload_enable = CONFIG_OFFLOAD_ENABLE;
 	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_ENABLE;
@@ -1260,11 +1274,40 @@ aq_attach(device_t parent, device_t self, void *aux)
 	ifp->if_watchdog = aq_watchdog;
 	IFQ_SET_READY(&ifp->if_snd);
 
-	//XXX: notyet
+	/* initialize capabilities */
+	sc->sc_ethercom.ec_capabilities = 0;
+	sc->sc_ethercom.ec_capenable = 0;
+#if notyet
+	// XXX: NOTYET
+	sc->sc_ethercom.ec_capabilities |= ETHERCAP_JUMBO_MTU;
+	sc->sc_ethercom.ec_capabilities |= ETHERCAP_EEE;
+	sc->sc_ethercom.ec_capabilities |= ETHERCAP_VLAN_MTU | ETHERCAP_VLAN_HWTAGGING;
+	sc->sc_ethercom.ec_capenable |= ETHERCAP_VLAN_HWTAGGING;
+#endif
+
 	ifp->if_capabilities = 0;
 	ifp->if_capenable = 0;
+#if notyet
+	ifp->if_capabilities |= IFCAP_TSOv4 | IFCAP_TSOv6;
+	ifp->if_capabilities |= IFCAP_LRO;
+	ifp->if_capabilities |=
+	    IFCAP_CSUM_IPv4_Tx |
+	    IFCAP_CSUM_TCPv4_Tx |
+	    IFCAP_CSUM_UDPv4_Tx |
+	    IFCAP_CSUM_TCPv6_Tx |
+	    IFCAP_CSUM_UDPv6_Tx;
+#endif
+#if notyet
+	ifp->if_capabilities |=
+	    IFCAP_CSUM_TCPv4_Rx |
+	    IFCAP_CSUM_UDPv4_Rx |
+	    IFCAP_CSUM_TCPv6_Rx |
+	    IFCAP_CSUM_UDPv6_Rx;
+#endif
+	ifp->if_capabilities |=
+	    IFCAP_CSUM_IPv4_Rx;
 
-	sc->sc_ethercom.ec_capabilities = ETHERCAP_VLAN_MTU;
+	aq_set_capability(sc);
 
 	if_attach(ifp);
 	if_deferred_start_init(ifp, NULL);
@@ -2068,6 +2111,59 @@ aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
 }
 
 static int
+aq_set_capability(struct aq_softc *sc)
+{
+	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	int ip4csum_tx = ((ifp->if_capenable & IFCAP_CSUM_IPv4_Tx) == 0) ? 0 : 1;
+	int ip4csum_rx = ((ifp->if_capenable & IFCAP_CSUM_IPv4_Rx) == 0) ? 0 : 1;
+	int l4csum_tx = ((ifp->if_capenable & (IFCAP_CSUM_TCPv4_Tx | IFCAP_CSUM_UDPv4_Tx | IFCAP_CSUM_TCPv6_Tx | IFCAP_CSUM_UDPv6_Tx)) == 0) ? 0 : 1;
+	int l4csum_rx = ((ifp->if_capenable & (IFCAP_CSUM_TCPv4_Rx | IFCAP_CSUM_UDPv4_Rx | IFCAP_CSUM_TCPv6_Rx | IFCAP_CSUM_UDPv6_Rx)) == 0) ? 0 : 1;
+	uint32_t lso = ((ifp->if_capenable & (IFCAP_TSOv4 | IFCAP_TSOv6)) == 0) ? 0 : 0xffffffff;
+	uint32_t lro = ((ifp->if_capenable & IFCAP_LRO) == 0) ? 0 : 0xffffffff;
+	uint32_t i, v;
+
+	printf("%s:%d: ip4csum_tx=%d, ip4csum_rx=%d, L4csum_tx=%d, L4csum_rx=%d, lso=%x, lro=%x\n", __func__, __LINE__,
+	    ip4csum_tx, ip4csum_rx, l4csum_tx, l4csum_rx, lso, lro);
+
+	/* TX checksums offloads*/
+	AQ_WRITE_REG_BIT(sc, TPO_HWCSUM_REG, TPO_HWCSUM_IP4CSUM_EN, ip4csum_tx);
+	AQ_WRITE_REG_BIT(sc, TPO_HWCSUM_REG, TPO_HWCSUM_L4CSUM_EN, l4csum_tx);
+
+	/* RX checksums offloads*/
+	AQ_WRITE_REG_BIT(sc, RPO_HWCSUM_REG, RPO_HWCSUM_IP4CSUM_EN, ip4csum_rx);
+	AQ_WRITE_REG_BIT(sc, RPO_HWCSUM_REG, RPO_HWCSUM_L4CSUM_EN, l4csum_rx);
+
+	/* LSO offloads*/
+	AQ_WRITE_REG(sc, TDM_LSO_EN_REG, lso);
+
+#define AQ_B0_LRO_RXD_MAX	16
+	v = (8 < AQ_B0_LRO_RXD_MAX) ? 3 :
+	    (4 < AQ_B0_LRO_RXD_MAX) ? 2 :
+	    (2 < AQ_B0_LRO_RXD_MAX) ? 1 : 0;
+	for (i = 0; i < AQ_RINGS_MAX; i++) {
+		AQ_WRITE_REG_BIT(sc, RPO_LRO_LDES_MAX_REG(i), RPO_LRO_LDES_MAX_MASK(i), v);
+	}
+
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_TB_DIV_REG, RPO_LRO_TB_DIV, 0x61a);
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_INACTIVE_IVAL_REG, RPO_LRO_INACTIVE_IVAL, 0);
+	/*
+	 * the LRO timebase divider is 5 uS (0x61a),
+	 * to get a maximum coalescing interval of 250 uS,
+	 * we need to multiply by 50(0x32) to get
+	 * the default value 250 uS
+	 */
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_MAX_COALESCING_IVAL_REG, RPO_LRO_MAX_COALESCING_IVAL, 50);
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_QSESSION_LIMIT, 1);
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_TOTAL_DESC_LIMIT, 2);
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_PATCHOPTIMIZATION_EN, 0);
+	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_MIN_PAYLOAD_OF_FIRST_PKT, 10);
+	AQ_WRITE_REG(sc, RPO_LRO_RSC_MAX_REG, 1);
+	AQ_WRITE_REG(sc, RPO_LRO_ENABLE_REG, lro);
+
+	return 0;
+}
+
+static int
 aq_set_filter(struct aq_softc *sc)
 {
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
@@ -2437,48 +2533,6 @@ aq_hw_qos_set(struct aq_softc *sc)
 	}
 }
 
-static void
-aq_hw_offload_set(struct aq_softc *sc)
-{
-	uint32_t i, v;
-
-	/* TX checksums offloads*/
-	AQ_WRITE_REG_BIT(sc, TPO_IPV4_REG, TPO_IPV4_CHK_EN, 1);
-	AQ_WRITE_REG_BIT(sc, TPO_IPV4_REG, TPO_IPV4_L4_CHECK_EN, 1);
-
-	/* RX checksums offloads*/
-	AQ_WRITE_REG_BIT(sc, RPO_IPV4_REG, RPO_IPV4_CHK_EN, 1);
-	AQ_WRITE_REG_BIT(sc, RPO_IPV4_REG, RPO_IPV4_L4_CHECK_EN, 1);
-
-	/* LSO offloads*/
-	AQ_WRITE_REG(sc, TDM_LSO_EN_REG, 0xffffffff);
-
-#define AQ_B0_LRO_RXD_MAX	16
-	v = (8 < AQ_B0_LRO_RXD_MAX) ? 3 :
-	    (4 < AQ_B0_LRO_RXD_MAX) ? 2 :
-	    (2 < AQ_B0_LRO_RXD_MAX) ? 1 : 0;
-	for (i = 0; i < AQ_RINGS_MAX; i++) {
-		AQ_WRITE_REG_BIT(sc, RPO_LRO_LDES_MAX_REG(i), RPO_LRO_LDES_MAX_MASK(i), v);
-	}
-
-	AQ_WRITE_REG_BIT(sc, RPO_LRO_TB_DIV_REG, RPO_LRO_TB_DIV, 0x61a);
-	AQ_WRITE_REG_BIT(sc, RPO_LRO_INACTIVE_IVAL_REG, RPO_LRO_INACTIVE_IVAL, 0);
-	/*
-	 * the LRO timebase divider is 5 uS (0x61a),
-	 * to get a maximum coalescing interval of 250 uS,
-	 * we need to multiply by 50(0x32) to get
-	 * the default value 250 uS
-	 */
-	AQ_WRITE_REG_BIT(sc, RPO_LRO_MAX_COALESCING_IVAL_REG, RPO_LRO_MAX_COALESCING_IVAL, 50);
-	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_QSESSION_LIMIT, 1);
-	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_TOTAL_DESC_LIMIT, 2);
-	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_PATCHOPTIMIZATION_EN, 0);
-	AQ_WRITE_REG_BIT(sc, RPO_LRO_CONF_REG, RPO_LRO_CONF_MIN_PAYLOAD_OF_FIRST_PKT, 10);
-	AQ_WRITE_REG(sc, RPO_LRO_RSC_MAX_REG, 1);
-	AQ_WRITE_REG(sc, RPO_LRO_ENABLE_REG, sc->sc_lro_enable ? 0xffffffff : 0);
-
-}
-
 /* called once from aq_attach */
 static void
 aq_init_rsstable(struct aq_softc *sc)
@@ -2696,8 +2750,6 @@ aq_hw_init(struct aq_softc *sc)
 	/* link interrupt */
 	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_REG(3), __BIT(7) | LINKSTAT_IRQ);
 
-	aq_hw_offload_set(sc);
-
 	return 0;
 }
 
@@ -2782,6 +2834,7 @@ aq_update_link_status(struct aq_softc *sc)
 			sc->sc_statistics_ ## name += n;										\
 		} while (/*CONSTCOND*/0);
 
+#ifdef XXX_DUMP_STAT
 		ADD_DELTA(cur, prev, uprc, "RX ucast");
 		ADD_DELTA(cur, prev, mprc, "RX mcast");
 		ADD_DELTA(cur, prev, bprc, "RX bcast");
@@ -2800,6 +2853,7 @@ aq_update_link_status(struct aq_softc *sc)
 		ADD_DELTA(cur, prev, ubtc, "TX ucast bytes");
 		ADD_DELTA(cur, prev, dpc,  "DMA drop");
 		ADD_DELTA(cur, prev, cprc, "RX coalesced");
+#endif
 
 		sc->sc_statistics_idx = cur;
 	}
@@ -3637,18 +3691,16 @@ aq_rx_intr(struct aq_rxring *rxring)
 
 		if (((rxd_status & RXDESC_STATUS_MAC_DMA_ERR) != 0) &&
 		    ((rxd_type & RXDESC_TYPE_RDM_ERR) != 0)) {
-
 			//XXX
 			printf("RDM_ERR: desc[%d] type=0x%08x, hash=0x%08x, status=0x%08x, pktlen=%u, nextdesc=%u, vlan=0x%x\n",
 			    idx, rxd_type, rxd_hash, rxd_status, rxd_pktlen, rxd_nextdescptr, rxd_vlan);
-			printf("RDM_ERR: type: rss=%ld, pkttype=0x%lx, rdm=%ld, cntl=%ld, sph=%ld, hdrlen=%ld\n",
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSS),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE),
+			printf("RDM_ERR: type: rsstype=0x%lx, rdm=%ld, ipv4checked=%ld, tcpudpchecked=%ld, sph=%ld, hdrlen=%ld\n",
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RDM_ERR),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_CNTL),
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED),
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
-
 			aq_rxring_reset_desc(sc, rxring, idx);
 			goto rx_next;
 		}
@@ -3658,16 +3710,89 @@ aq_rx_intr(struct aq_rxring *rxring)
 #else
 		if (rxd_nextdescptr != 0) {	// XXX: Debug
 #endif
-			printf("desc[%d] type=0x%08x, hash=0x%08x, status=0x%08x, pktlen=%u, nextdesc=%u, vlan=0x%x\n",
+			const char * const rsstype_tbl[15] = {
+				[RXDESC_TYPE_RSSTYPE_NONE] = "none",
+				[RXDESC_TYPE_RSSTYPE_IPV4] = "ipv4",
+				[RXDESC_TYPE_RSSTYPE_IPV6] = "ipv6",
+				[RXDESC_TYPE_RSSTYPE_IPV4_TCP] = "ipv4-tcp",
+				[RXDESC_TYPE_RSSTYPE_IPV6_TCP] = "ipv6-tcp",
+				[RXDESC_TYPE_RSSTYPE_IPV4_UDP] = "ipv4-udp",
+				[RXDESC_TYPE_RSSTYPE_IPV6_UDP] = "ipv6-udp",
+			};
+			const char * const pkttype_eth_table[4] = {
+				"IPV4",
+				"IPV6",
+				"OTHERS",
+				"ARP"
+			};
+			const char * const pkttype_proto_table[8] = {
+				"TCP",
+				"UDP",
+				"SCTP",
+				"ICMP",
+				"PKTTYPE_PROTO4",
+				"PKTTYPE_PROTO5", 
+				"PKTTYPE_PROTO6", 
+				"PKTTYPE_PROTO7"
+			};
+
+			const char *rsstype = rsstype_tbl[__SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE) & 15];
+			if (rsstype == NULL)
+				rsstype = "???";
+
+			unsigned int pkttype_proto = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_PROTO);
+			unsigned int pkttype_eth = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_ETHER);
+
+			const char *csumstatus = "?";
+			if (pkttype_eth == 0) {
+				if (__SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED)) {
+					csumstatus = "ipv4 checked";
+					if (__SHIFTOUT(rxd_status, RXDESC_STATUS_L3_CSUM_NG) == 0) {
+						csumstatus = "ipv4 csum OK";
+					} else {
+						csumstatus = "ipv4 csum NG";
+					}
+				} else {
+					csumstatus = "ipv4 not checked";
+				}
+			}
+			const char *l4csumstatus = "?";
+			if (__SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED)) {
+				l4csumstatus = "TCP/UDP checked";
+				if (__SHIFTOUT(rxd_status, RXDESC_STATUS_L4_CSUM_ERROR)) {
+					l4csumstatus = "TCP/UDP csum ERR";
+				} else {
+					if (__SHIFTOUT(rxd_status, RXDESC_STATUS_L4_CSUM_OK)) {
+						l4csumstatus = "TCP/UDP csum OK";
+					} else {
+						l4csumstatus = "TCP/UDP csum NG";
+					}
+				}
+			} else {
+				l4csumstatus = "TCP/UDP not checked";
+			}
+
+
+
+			printf("RXdesc[%4d]: type=0x%x, hash=0x%x, status=0x%x, pktlen=%u, nextdesc=%u, vlan=0x%x\n",
 			    idx, rxd_type, rxd_hash, rxd_status, rxd_pktlen, rxd_nextdescptr, rxd_vlan);
-			printf(" type: rss=%ld, pkttype=0x%lx, rdm=%ld, cntl=%ld, sph=%ld, hdrlen=%ld\n",
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSS),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RDM_ERR),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_CNTL),
+			printf("              sph=%ld, hdrlen=%ld\n",
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
+			printf("              rsstype=0x%lx(%s), pkttype_vlan=%lu/%lu, pkttype_proto=%u(%s), pkttype_eth=%u(%s), v4chked=%ld, l4chked=%ld\n",
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
+			    rsstype,
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE),
+			    pkttype_proto,
+			    pkttype_proto_table[pkttype_proto],
+			    pkttype_eth,
+			    pkttype_eth_table[pkttype_eth],
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED),
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED));
+			printf("              csumstatus=%s, l4csumstatus=%s\n", csumstatus, l4csumstatus);
 		}
+	/******************************************/
 
 		bus_dmamap_sync(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap, 0,
 		    rxring->ring_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_POSTREAD);
@@ -3693,6 +3818,49 @@ aq_rx_intr(struct aq_rxring *rxring)
 
 		if ((rxd_status & RXDESC_STATUS_EOP) != 0) {
 			/* last buffer */
+
+			if (m0 == m) {	/* XXX: do csum test for multi descriptors */
+				unsigned int pkttype_eth = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_ETHER);
+				if ((ifp->if_capabilities & IFCAP_CSUM_IPv4_Rx) &&
+				    (pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) &&
+				    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED)) {
+					m->m_pkthdr.csum_flags |= M_CSUM_IPv4;
+					if (__SHIFTOUT(rxd_status, RXDESC_STATUS_L3_CSUM_NG))
+						m->m_pkthdr.csum_flags |= M_CSUM_IPv4_BAD;
+				}
+
+#if 0
+				//XXX: NIC always marks BAD for fragmented packet? need to care.
+				if (__SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED)) {
+					bool need_result = false;
+					unsigned int pkttype_proto = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_PROTO);
+
+					if (pkttype_proto == RXDESC_TYPE_PKTTYPE_PROTO_TCP) {
+						if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) && (ifp->if_capabilities & IFCAP_CSUM_TCPv4_Rx)) {
+							m->m_pkthdr.csum_flags |= M_CSUM_TCPv4;
+							need_result = true;
+						} else if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV6) && (ifp->if_capabilities & IFCAP_CSUM_TCPv6_Rx)) {
+							m->m_pkthdr.csum_flags |= M_CSUM_TCPv6;
+							need_result = true;
+						}
+					} else if (pkttype_proto == RXDESC_TYPE_PKTTYPE_PROTO_UDP) {
+						if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) && (ifp->if_capabilities & IFCAP_CSUM_UDPv4_Rx)) {
+							m->m_pkthdr.csum_flags |= M_CSUM_UDPv4;
+							need_result = true;
+						} else if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV6) && (ifp->if_capabilities & IFCAP_CSUM_UDPv6_Rx)) {
+							m->m_pkthdr.csum_flags |= M_CSUM_UDPv6;
+							need_result = true;
+						}
+					}
+					if (need_result &&
+					    (__SHIFTOUT(rxd_status, RXDESC_STATUS_L4_CSUM_ERROR) ||
+					    !__SHIFTOUT(rxd_status, RXDESC_STATUS_L4_CSUM_OK))) {
+						m->m_pkthdr.csum_flags |= M_CSUM_TCP_UDP_BAD;
+					}
+				}
+#endif
+			}
+
 			m_set_rcvif(m0, ifp);
 			m->m_pkthdr.len = amount;
 			if_percpuq_enqueue(ifp->if_percpuq, m);
@@ -3975,19 +4143,27 @@ aq_ioctl(struct ifnet *ifp, unsigned long cmd, void *data)
 	error = ether_ioctl(ifp, cmd, data);
 	splx(s);
 
-	if (error == ENETRESET) {
-		error = 0;
-		if ((cmd == SIOCADDMULTI || cmd == SIOCDELMULTI) &&
-		    (ifp->if_flags & IFF_RUNNING)) {
-			/*
-			 * Multicast list has changed; set the hardware filter
-			 * accordingly.
-			 */
-			error = aq_set_filter(sc);
+	if (error != ENETRESET)
+		return error;
+
+	switch (cmd) {
+	case SIOCSIFCAP:
+		error = aq_set_capability(sc);
+		break;
+	case SIOCADDMULTI:
+	case SIOCDELMULTI:
+		if ((ifp->if_flags & IFF_RUNNING) == 0)
+			break;
+
+		/*
+		 * Multicast list has changed; set the hardware filter
+		 * accordingly.
+		 */
+		error = aq_set_filter(sc);
 #ifdef XXX_DUMP_MACTABLE
-			aq_dump_mactable(sc);
+		aq_dump_mactable(sc);
 #endif
-		}
+		break;
 	}
 
 	return error;
