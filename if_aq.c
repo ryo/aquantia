@@ -44,8 +44,10 @@
 //#define XXX_DUMP_STAT
 //#define XXX_INTR_DEBUG
 //#define XXX_RXINTR_DEBUG
+#define XXX_TXDESC_DEBUG
+#define XXX_RXDESC_DEBUG
 //#define XXX_DUMP_RX_COUNTER
-//#define XXX_DUMP_RX_MBUF
+#define XXX_DUMP_RX_MBUF
 //#define XXX_DUMP_MACTABLE
 //#ifdef XXX_DUMP_RING
 #define XXX_DUMP_RSS_KEY
@@ -163,6 +165,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define CONFIG_INTR_MODERATION_ENABLE	1	/* ok */
 
+#undef CONFIG_LRO_SUPPORT
 #define CONFIG_RSS_ENABLE		0
 #define CONFIG_OFFLOAD_ENABLE		0
 #define CONFIG_L3_FILTER_ENABLE		0
@@ -369,7 +372,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define RPO_HWCSUM_REG				0x5580
 #define  RPO_HWCSUM_IP4CSUM_EN			__BIT(1)
-#define  RPO_HWCSUM_L4CSUM_EN			__BIT(0)	/* TCP, UDP */
+#define  RPO_HWCSUM_L4CSUM_EN			__BIT(0)	/* TCP/UDP */
 
 #define RPO_LRO_ENABLE_REG			0x5590
 
@@ -476,13 +479,11 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_HW_TXBUF_MAX		160
 #define AQ_HW_RXBUF_MAX		320
 
-
 #define TPO_HWCSUM_REG				0x7800
 #define  TPO_HWCSUM_IP4CSUM_EN			__BIT(1)
-#define  TPO_HWCSUM_L4CSUM_EN			__BIT(0)	/* TCP,UDP */
+#define  TPO_HWCSUM_L4CSUM_EN			__BIT(0)	/* TCP/UDP */
 
 #define TDM_LSO_EN_REG				0x7810
-
 
 #define THM_LSO_TCP_FLAG1_REG			0x7820
 #define  THM_LSO_TCP_FLAG1_FIRST		__BITS(11,0)
@@ -781,11 +782,11 @@ struct aq_rx_desc_wb {
 #define  RXDESC_TYPE_PKTTYPE_ETHER_OTHERS	2
 #define  RXDESC_TYPE_PKTTYPE_ETHER_ARP		3
 #define RXDESC_TYPE_PKTTYPE_PROTO	__BITS(8,6)
-#define RXDESC_TYPE_PKTTYPE_PROTO_TCP		0
-#define RXDESC_TYPE_PKTTYPE_PROTO_UDP		1
-#define RXDESC_TYPE_PKTTYPE_PROTO_SCTP		2
-#define RXDESC_TYPE_PKTTYPE_PROTO_ICMP		3
-#define RXDESC_TYPE_PKTTYPE_PROTO_OTHERS	4
+#define  RXDESC_TYPE_PKTTYPE_PROTO_TCP		0
+#define  RXDESC_TYPE_PKTTYPE_PROTO_UDP		1
+#define  RXDESC_TYPE_PKTTYPE_PROTO_SCTP		2
+#define  RXDESC_TYPE_PKTTYPE_PROTO_ICMP		3
+#define  RXDESC_TYPE_PKTTYPE_PROTO_OTHERS	4
 #define RXDESC_TYPE_PKTTYPE_VLAN	__BIT(9)
 #define RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE	__BIT(10)
 #define RXDESC_TYPE_RDM_ERR		__BIT(12)
@@ -818,22 +819,23 @@ typedef union aq_rx_desc {
 
 typedef struct aq_tx_desc {
 	uint64_t buf_addr;
-	uint32_t ctl;
-#define AQ_TXDESC_CTL_TYPE_MASK		0x00000003
-#define AQ_TXDESC_CTL_TYPE_TXD		0x00000001
-#define AQ_TXDESC_CTL_TYPE_TXC		0x00000002
-#define AQ_TXDESC_CTL_BLEN		__BITS(19,4)
-#define AQ_TXDESC_CTL_DD		__BIT(20)
-#define AQ_TXDESC_CTL_EOP		__BIT(21)
-#define AQ_TXDESC_CTL_CMD_VLAN		__BIT(22)
-#define AQ_TXDESC_CTL_CMD_FCS		__BIT(23)
-#define AQ_TXDESC_CTL_CMD_IPCSO 	__BIT(24)
-#define AQ_TXDESC_CTL_CMD_TUCSO 	__BIT(25)
-#define AQ_TXDESC_CTL_CMD_LSO		__BIT(26)
-#define AQ_TXDESC_CTL_CMD_WB		__BIT(27)
-#define AQ_TXDESC_CTL_CMD_VXLAN 	__BIT(28)
-#define AQ_TXDESC_CTL_CMD_IPV6		__BIT(21) /* vs FSC */
-#define AQ_TXDESC_CTL_CMD_TCP		__BIT(22) /* vs VLAN */
+	uint32_t ctl1;
+#define AQ_TXDESC_CTL1_TYPE_MASK	0x00000003
+#define AQ_TXDESC_CTL1_TYPE_TXD		0x00000001
+#define AQ_TXDESC_CTL1_TYPE_TXC		0x00000002
+#define AQ_TXDESC_CTL1_BLEN		__BITS(19,4)	/* TXD */
+#define AQ_TXDESC_CTL1_DD		__BIT(20)	/* TXD */
+#define AQ_TXDESC_CTL1_EOP		__BIT(21)	/* TXD */
+#define AQ_TXDESC_CTL1_CMD_VLAN		__BIT(22)	/* TXD */
+#define AQ_TXDESC_CTL1_CMD_FCS		__BIT(23)	/* TXD */
+#define AQ_TXDESC_CTL1_CMD_IP4CSUM	__BIT(24)	/* TXD */
+#define AQ_TXDESC_CTL1_CMD_L4CSUM	__BIT(25)	/* TXD */
+#define AQ_TXDESC_CTL1_CMD_LSO		__BIT(26)	/* TXD */
+#define AQ_TXDESC_CTL1_CMD_WB		__BIT(27)	/* TXD */
+#define AQ_TXDESC_CTL1_CMD_VXLAN	__BIT(28)	/* TXD */
+#define AQ_TXDESC_CTL1_VID		__BITS(15,4)	/* TXC */
+#define AQ_TXDESC_CTL1_LSO_IPV6		__BIT(21)	/* TXC */
+#define AQ_TXDESC_CTL1_LSO_TCP		__BIT(22)	/* TXC */
 	uint32_t ctl2;
 #define AQ_TXDESC_CTL2_LEN		__BITS(31,14)
 #define AQ_TXDESC_CTL2_CTX_EN		__BIT(13)
@@ -967,6 +969,7 @@ struct aq_softc {
 	struct ethercom sc_ethercom;
 	struct ether_addr sc_enaddr;
 	struct ifmedia sc_media;
+	int sc_ec_capenable;		/* last ec_capenable */
 	unsigned short sc_if_flags;	/* last if_flags */
 
 	aq_hw_stats_s_t sc_statistics[2];
@@ -1281,33 +1284,34 @@ aq_attach(device_t parent, device_t self, void *aux)
 	// XXX: NOTYET
 	sc->sc_ethercom.ec_capabilities |= ETHERCAP_JUMBO_MTU;
 	sc->sc_ethercom.ec_capabilities |= ETHERCAP_EEE;
-	sc->sc_ethercom.ec_capabilities |= ETHERCAP_VLAN_MTU | ETHERCAP_VLAN_HWTAGGING;
-	sc->sc_ethercom.ec_capenable |= ETHERCAP_VLAN_HWTAGGING;
+	sc->sc_ethercom.ec_capabilities |= ETHERCAP_VLAN_HWFILTER;
 #endif
+	sc->sc_ethercom.ec_capabilities |=
+	    ETHERCAP_VLAN_MTU |
+	    ETHERCAP_VLAN_HWTAGGING;
+	sc->sc_ethercom.ec_capenable |=
+	    ETHERCAP_VLAN_HWTAGGING;
 
 	ifp->if_capabilities = 0;
 	ifp->if_capenable = 0;
-#if notyet
-	ifp->if_capabilities |= IFCAP_TSOv4 | IFCAP_TSOv6;
+#ifdef CONFIG_LRO_SUPPORT
 	ifp->if_capabilities |= IFCAP_LRO;
-	ifp->if_capabilities |=
-	    IFCAP_CSUM_IPv4_Tx |
-	    IFCAP_CSUM_TCPv4_Tx |
-	    IFCAP_CSUM_UDPv4_Tx |
-	    IFCAP_CSUM_TCPv6_Tx |
-	    IFCAP_CSUM_UDPv6_Tx;
 #endif
 #if notyet
-	ifp->if_capabilities |=
-	    IFCAP_CSUM_TCPv4_Rx |
-	    IFCAP_CSUM_UDPv4_Rx |
-	    IFCAP_CSUM_TCPv6_Rx |
-	    IFCAP_CSUM_UDPv6_Rx;
+	// TSO
+	ifp->if_capabilities |= IFCAP_TSOv4 | IFCAP_TSOv6;
 #endif
-	ifp->if_capabilities |=
-	    IFCAP_CSUM_IPv4_Rx;
-
-	aq_set_capability(sc);
+#if notyet
+	// XXX: RX L4 CSUM doesn't work for fragment packet... RX L4 CSUM is requied for LRO?
+	ifp->if_capabilities |= IFCAP_CSUM_TCPv4_Rx | IFCAP_CSUM_TCPv6_Rx;
+	ifp->if_capabilities |= IFCAP_CSUM_UDPv4_Rx | IFCAP_CSUM_UDPv6_Rx;
+#endif
+	/* TX hardware checksum offloadding */
+	ifp->if_capabilities |= IFCAP_CSUM_IPv4_Tx;
+	ifp->if_capabilities |= IFCAP_CSUM_TCPv4_Tx | IFCAP_CSUM_TCPv6_Tx;
+	ifp->if_capabilities |= IFCAP_CSUM_UDPv4_Tx | IFCAP_CSUM_UDPv6_Tx;
+	/* RX hardware checksum offloadding */
+	ifp->if_capabilities |= IFCAP_CSUM_IPv4_Rx;
 
 	if_attach(ifp);
 	if_deferred_start_init(ifp, NULL);
@@ -3176,8 +3180,8 @@ dump_txrings(struct aq_softc *sc)
 			printf("txring->ring_mbufs [%d].m        = %p\n", i, txring->ring_mbufs[i].m);
 			printf("txring->ring_txdesc[%d].buf_addr = %08lx\n", i, txring->ring_txdesc[i].buf_addr);
 			printf("txring->ring_txdesc[%d].ctl  = %08x%s%s\n", i, txring->ring_txdesc[i].ctl,
-			    (txring->ring_txdesc[i].ctl & AQ_TXDESC_CTL_EOP) ? " EOP" : "",
-			    (txring->ring_txdesc[i].ctl & AQ_TXDESC_CTL_CMD_WB) ? " WB" : "");
+			    (txring->ring_txdesc[i].ctl & AQ_TXDESC_CTL1_EOP) ? " EOP" : "",
+			    (txring->ring_txdesc[i].ctl & AQ_TXDESC_CTL1_CMD_WB) ? " WB" : "");
 			printf("txring->ring_txdesc[%d].ctl2 = %08x\n", i, txring->ring_txdesc[i].ctl2);
 		}
 
@@ -3413,7 +3417,8 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_BUFSIZE_REG(ringidx), RX_DMA_DESC_BUFSIZE_HDR, 0 / 1024);
 
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_REG(ringidx), RX_DMA_DESC_HEADER_SPLIT, 0);
-		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_REG(ringidx), RX_DMA_DESC_VLAN_STRIP, 0);
+		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_REG(ringidx), RX_DMA_DESC_VLAN_STRIP,
+		    (sc->sc_ethercom.ec_capenable & ETHERCAP_VLAN_HWTAGGING) ? 1 : 0);
 
 		/* reset TAIL pointer, and update readidx (HEAD pointer cannot write) */
 		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx), AQ_RXD_NUM - 1);
@@ -3447,24 +3452,28 @@ static int
 aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 {
 	bus_dmamap_t map;
-	struct mbuf *m;
+	struct mbuf * const m = *mp;
+	uint32_t ctl1, ctl1_ctx, ctl2;
 	int idx, i, error;
 
 	idx = txring->ring_prodidx;
 	map = txring->ring_mbufs[idx].dmamap;
 
-	m = *mp;
-
 	error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
 	    BUS_DMA_NOWAIT);
 	if (error != 0) {
+		/* XXX: TODO: try to m_defrag */
 		device_printf(sc->sc_dev,
 		    "Error mapping mbuf into TX chain: error=%d\n", error);
 		m_freem(m);
 		return error;
 	}
 
-	if (map->dm_nsegs > txring->ring_nfree) {
+	/*
+	 * check spaces of free descriptors.
+	 * +1 is reserved for context descriptor for vlan, etc,.
+	 */
+	if ((map->dm_nsegs + 1)  > txring->ring_nfree) {
 		bus_dmamap_unload(sc->sc_dmat, map);
 		device_printf(sc->sc_dev,
 		    "too many mbuf chain %d\n", map->dm_nsegs);
@@ -3475,14 +3484,40 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	bus_dmamap_sync(sc->sc_dmat, map, 0, map->dm_mapsize,
 	    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
 
+	ctl1_ctx = 0;
+	ctl2 = __SHIFTIN(m->m_pkthdr.len, AQ_TXDESC_CTL2_LEN);
+
+	if (vlan_has_tag(m)) {
+		ctl1 = AQ_TXDESC_CTL1_TYPE_TXC;
+#ifdef XXX_TXDESC_DEBUG
+		printf("TXdesc[%d] set VLANID %u\n", idx, vlan_get_tag(m));
+#endif
+		ctl1 |= __SHIFTIN(vlan_get_tag(m), AQ_TXDESC_CTL1_VID);
+
+		ctl1_ctx |= AQ_TXDESC_CTL1_CMD_VLAN;
+		ctl2 |= AQ_TXDESC_CTL2_CTX_EN;
+
+
+		/* fill context descriptor and forward index */
+		txring->ring_txdesc[idx].buf_addr = 0;
+		txring->ring_txdesc[idx].ctl1 = htole32(ctl1);
+		txring->ring_txdesc[idx].ctl2 = 0;
+
+		idx = TXRING_NEXTIDX(idx);
+		txring->ring_nfree--;
+	}
+
+	if (m->m_pkthdr.csum_flags & M_CSUM_IPv4)
+		ctl1_ctx |= AQ_TXDESC_CTL1_CMD_IP4CSUM;
+	if (m->m_pkthdr.csum_flags & (M_CSUM_TCPv4 | M_CSUM_UDPv4 | M_CSUM_TCPv6 | M_CSUM_UDPv6)) {
+		ctl1_ctx |= AQ_TXDESC_CTL1_CMD_L4CSUM;
+	}
+
 	/* fill descriptor(s) */
 	for (i = 0; i < map->dm_nsegs; i++) {
-		txring->ring_txdesc[idx].buf_addr = htole64(map->dm_segs[i].ds_addr);
-		txring->ring_txdesc[idx].ctl =
-		    AQ_TXDESC_CTL_TYPE_TXD |
-		    __SHIFTIN(map->dm_segs[i].ds_len, AQ_TXDESC_CTL_BLEN);
-		txring->ring_txdesc[idx].ctl2 =
-		    __SHIFTIN(m->m_pkthdr.len, AQ_TXDESC_CTL2_LEN);
+		ctl1 = ctl1_ctx | AQ_TXDESC_CTL1_TYPE_TXD |
+		    __SHIFTIN(map->dm_segs[i].ds_len, AQ_TXDESC_CTL1_BLEN);
+		ctl1 |= AQ_TXDESC_CTL1_CMD_FCS;
 
 		if (i == 0) {
 			/* remember mbuf of these descriptors */
@@ -3492,21 +3527,22 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 		}
 
 		if (i == map->dm_nsegs - 1) {
-			/* EndOfPacket. mark last segment */
-			txring->ring_txdesc[idx].ctl |=
-			    AQ_TXDESC_CTL_EOP |
-			    AQ_TXDESC_CTL_CMD_WB;
+			/* last segment, mark as EndOfPacket, and cause to intr */
+			ctl1 |= AQ_TXDESC_CTL1_EOP | AQ_TXDESC_CTL1_CMD_WB;
 		}
 
-#if 0
-		 printf("%s:%d: write txdesc[%3d] seg:%d/%d buf_addr=%012lx, len=%-5lu ctl=%08x ctl2=%08x%s\n", __func__, __LINE__, idx,
+#ifdef XXX_TXDESC_DEBUG
+		printf("TXdesc[%d] seg:%d/%d buf_addr=%012lx, len=%-5lu ctl1=%08x ctl2=%08x%s\n",
+		    idx,
 		    i, map->dm_nsegs - 1,
-		     map->dm_segs[i].ds_addr,
-		     map->dm_segs[i].ds_len,
-		    txring->ring_txdesc[idx].ctl,
-		    txring->ring_txdesc[idx].ctl2,
-		     (i == map->dm_nsegs - 1) ? " EOP/WB" : "");
+		    map->dm_segs[i].ds_addr,
+		    map->dm_segs[i].ds_len,
+		    ctl1, ctl2,
+		    (i == map->dm_nsegs - 1) ? " EOP/WB" : "");
 #endif
+		txring->ring_txdesc[idx].buf_addr = htole64(map->dm_segs[i].ds_addr);
+		txring->ring_txdesc[idx].ctl1 = htole32(ctl1);
+		txring->ring_txdesc[idx].ctl2 = htole32(ctl2);
 
 		bus_dmamap_sync(sc->sc_dmat, txring->ring_txdesc_dmamap,
 		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
@@ -3582,7 +3618,7 @@ aq_tx_intr(struct aq_txring *txring)
 #if 0
 		//DEBUG? clear done txdesc
 		txring->ring_txdesc[idx].buf_addr = 0;
-		txring->ring_txdesc[idx].ctl = AQ_TXDESC_CTL_DD;
+		txring->ring_txdesc[idx].ctl = AQ_TXDESC_CTL1_DD;
 		txring->ring_txdesc[idx].ctl2 = 0;
 		bus_dmamap_sync(sc->sc_dmat, txring->ring_txdesc_dmamap,
 		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
@@ -3705,11 +3741,8 @@ aq_rx_intr(struct aq_rxring *rxring)
 			goto rx_next;
 		}
 
-#ifdef XXX_RXINTR_DEBUG
-		if (1) {
-#else
-		if (rxd_nextdescptr != 0) {	// XXX: Debug
-#endif
+#ifdef XXX_RXDESC_DEBUG
+		{
 			const char * const rsstype_tbl[15] = {
 				[RXDESC_TYPE_RSSTYPE_NONE] = "none",
 				[RXDESC_TYPE_RSSTYPE_IPV4] = "ipv4",
@@ -3744,7 +3777,7 @@ aq_rx_intr(struct aq_rxring *rxring)
 			unsigned int pkttype_eth = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_ETHER);
 
 			const char *csumstatus = "?";
-			if (pkttype_eth == 0) {
+			if (pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) {
 				if (__SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED)) {
 					csumstatus = "ipv4 checked";
 					if (__SHIFTOUT(rxd_status, RXDESC_STATUS_L3_CSUM_NG) == 0) {
@@ -3772,27 +3805,34 @@ aq_rx_intr(struct aq_rxring *rxring)
 				l4csumstatus = "TCP/UDP not checked";
 			}
 
-
-
-			printf("RXdesc[%4d]: type=0x%x, hash=0x%x, status=0x%x, pktlen=%u, nextdesc=%u, vlan=0x%x\n",
-			    idx, rxd_type, rxd_hash, rxd_status, rxd_pktlen, rxd_nextdescptr, rxd_vlan);
-			printf("              sph=%ld, hdrlen=%ld\n",
+			printf("RXdesc[%d]\n    type=0x%x, hash=0x%x, status=0x%x, DD=%lu, EOP=%lu, ERR=%lu, pktlen=%u, nextdsc=%u, vlan=%u, sph=%ld, hdrlen=%ld\n",
+			    idx, rxd_type, rxd_hash, rxd_status,
+			    __SHIFTOUT(rxd_status, RXDESC_STATUS_DD),
+			    __SHIFTOUT(rxd_status, RXDESC_STATUS_EOP),
+			    __SHIFTOUT(rxd_status, RXDESC_STATUS_MAC_DMA_ERR),
+			    rxd_pktlen, rxd_nextdescptr, rxd_vlan,
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
-			printf("              rsstype=0x%lx(%s), pkttype_vlan=%lu/%lu, pkttype_proto=%u(%s), pkttype_eth=%u(%s), v4chked=%ld, l4chked=%ld\n",
+
+			printf("    rsstype=0x%lx(%s), pkttype_vlan=%lu/%lu, pkttype_eth=%u(%s), pkttype_proto=%u(%s)\n",
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
 			    rsstype,
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE),
-			    pkttype_proto,
-			    pkttype_proto_table[pkttype_proto],
 			    pkttype_eth,
 			    pkttype_eth_table[pkttype_eth],
+			    pkttype_proto,
+			    pkttype_proto_table[pkttype_proto]);
+
+			printf("    v4chked=%ld,%s, l4chked=%ld,%s,%s\n",
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED));
-			printf("              csumstatus=%s, l4csumstatus=%s\n", csumstatus, l4csumstatus);
+			    __SHIFTOUT(rxd_status, RXDESC_STATUS_L3_CSUM_NG) ? "NG" : "OK",
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED),
+			    __SHIFTOUT(rxd_status, RXDESC_STATUS_L4_CSUM_ERROR) ? "ERR" : "NoERR",
+			    __SHIFTOUT(rxd_status, RXDESC_STATUS_L4_CSUM_OK) ? "OK" : "NG");
+			printf("    csumstatus=%s, l4csumstatus=%s\n", csumstatus, l4csumstatus);
 		}
-	/******************************************/
+#endif /* XXX_RXDESC_DEBUG */
 
 		bus_dmamap_sync(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap, 0,
 		    rxring->ring_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_POSTREAD);
@@ -3819,17 +3859,22 @@ aq_rx_intr(struct aq_rxring *rxring)
 		if ((rxd_status & RXDESC_STATUS_EOP) != 0) {
 			/* last buffer */
 
-			if (m0 == m) {	/* XXX: do csum test for multi descriptors */
+			if (m0 == m) {	/* XXX: do csum test for multi descriptors/JUMBO frame */
+				if ((sc->sc_ethercom.ec_capenable & ETHERCAP_VLAN_HWTAGGING) &&
+				    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN)) {
+					vlan_set_tag(m0, rxd_vlan);
+				}
+
 				unsigned int pkttype_eth = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_ETHER);
 				if ((ifp->if_capabilities & IFCAP_CSUM_IPv4_Rx) &&
 				    (pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) &&
 				    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED)) {
-					m->m_pkthdr.csum_flags |= M_CSUM_IPv4;
+					m0->m_pkthdr.csum_flags |= M_CSUM_IPv4;
 					if (__SHIFTOUT(rxd_status, RXDESC_STATUS_L3_CSUM_NG))
-						m->m_pkthdr.csum_flags |= M_CSUM_IPv4_BAD;
+						m0->m_pkthdr.csum_flags |= M_CSUM_IPv4_BAD;
 				}
 
-#if 0
+#if notyet
 				//XXX: NIC always marks BAD for fragmented packet? need to care.
 				if (__SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED)) {
 					bool need_result = false;
@@ -3837,32 +3882,32 @@ aq_rx_intr(struct aq_rxring *rxring)
 
 					if (pkttype_proto == RXDESC_TYPE_PKTTYPE_PROTO_TCP) {
 						if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) && (ifp->if_capabilities & IFCAP_CSUM_TCPv4_Rx)) {
-							m->m_pkthdr.csum_flags |= M_CSUM_TCPv4;
+							m0->m_pkthdr.csum_flags |= M_CSUM_TCPv4;
 							need_result = true;
 						} else if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV6) && (ifp->if_capabilities & IFCAP_CSUM_TCPv6_Rx)) {
-							m->m_pkthdr.csum_flags |= M_CSUM_TCPv6;
+							m0->m_pkthdr.csum_flags |= M_CSUM_TCPv6;
 							need_result = true;
 						}
 					} else if (pkttype_proto == RXDESC_TYPE_PKTTYPE_PROTO_UDP) {
 						if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) && (ifp->if_capabilities & IFCAP_CSUM_UDPv4_Rx)) {
-							m->m_pkthdr.csum_flags |= M_CSUM_UDPv4;
+							m0->m_pkthdr.csum_flags |= M_CSUM_UDPv4;
 							need_result = true;
 						} else if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV6) && (ifp->if_capabilities & IFCAP_CSUM_UDPv6_Rx)) {
-							m->m_pkthdr.csum_flags |= M_CSUM_UDPv6;
+							m0->m_pkthdr.csum_flags |= M_CSUM_UDPv6;
 							need_result = true;
 						}
 					}
 					if (need_result &&
 					    (__SHIFTOUT(rxd_status, RXDESC_STATUS_L4_CSUM_ERROR) ||
 					    !__SHIFTOUT(rxd_status, RXDESC_STATUS_L4_CSUM_OK))) {
-						m->m_pkthdr.csum_flags |= M_CSUM_TCP_UDP_BAD;
+						m0->m_pkthdr.csum_flags |= M_CSUM_TCP_UDP_BAD;
 					}
 				}
 #endif
 			}
 
 			m_set_rcvif(m0, ifp);
-			m->m_pkthdr.len = amount;
+			m0->m_pkthdr.len = amount;
 			if_percpuq_enqueue(ifp->if_percpuq, m);
 
 			m0 = mprev = NULL;
@@ -3902,17 +3947,30 @@ aq_ifflags_cb(struct ethercom *ec)
 {
 	struct ifnet *ifp = &ec->ec_if;
 	struct aq_softc *sc = ifp->if_softc;
-	int error = 0;
+	int i, ecchange, error = 0;
 	unsigned short iffchange;
 
 	//XXX: need lock
 	printf("%s:%d\n", __func__, __LINE__);
 
 	iffchange = ifp->if_flags ^ sc->sc_if_flags;
-
 	if ((iffchange & IFF_PROMISC) != 0)
 		error = aq_set_filter(sc);
 
+
+	ecchange = ec->ec_capenable ^ sc->sc_ec_capenable;
+	printf("old EC=%08x\n", sc->sc_ec_capenable);
+	printf("new EC=%08x\n", ec->ec_capenable);
+	printf("CHG EC=%08x\n", ecchange);
+	if (ecchange & ETHERCAP_VLAN_HWTAGGING) {
+		for (i = 0; i < AQ_RXRING_NUM; i++) {
+			AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_REG(i), RX_DMA_DESC_VLAN_STRIP,
+			    (ec->ec_capenable & ETHERCAP_VLAN_HWTAGGING) ? 1 : 0);
+			printf("HWTAGGING[%d] -> %d\n", i, (ec->ec_capenable & ETHERCAP_VLAN_HWTAGGING) ? 1 : 0);
+		}
+	}
+
+	sc->sc_ec_capenable = ec->ec_capenable;
 	sc->sc_if_flags = ifp->if_flags;
 	return error;
 }
@@ -3927,6 +3985,7 @@ aq_init(struct ifnet *ifp)
 	printf("%s:%d\n", __func__, __LINE__);
 
 	aq_update_vlan_filters(sc);
+	aq_set_capability(sc);
 
 	/* start TX */
 	for (i = 0; i < sc->sc_txringnum; i++) {
