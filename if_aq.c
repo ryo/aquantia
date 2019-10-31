@@ -44,10 +44,10 @@
 //#define XXX_DUMP_STAT
 //#define XXX_INTR_DEBUG
 //#define XXX_RXINTR_DEBUG
-#define XXX_TXDESC_DEBUG
-#define XXX_RXDESC_DEBUG
+//#define XXX_TXDESC_DEBUG
+//#define XXX_RXDESC_DEBUG
 //#define XXX_DUMP_RX_COUNTER
-#define XXX_DUMP_RX_MBUF
+//#define XXX_DUMP_RX_MBUF
 //#define XXX_DUMP_MACTABLE
 //#ifdef XXX_DUMP_RING
 #define XXX_DUMP_RSS_KEY
@@ -2434,7 +2434,7 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 
 	/* Vlan filters */
 	AQ_WRITE_REG_BIT(sc, RPF_VLAN_TPID_REG, RPF_VLAN_TPID_OUTER, ETHERTYPE_QINQ);
-	AQ_WRITE_REG_BIT(sc, RPF_VLAN_TPID_REG, RPF_VLAN_TPID_OUTER, ETHERTYPE_VLAN);
+	AQ_WRITE_REG_BIT(sc, RPF_VLAN_TPID_REG, RPF_VLAN_TPID_INNER, ETHERTYPE_VLAN);
 	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_REG, RPF_VLAN_MODE_PROMISC, 1);
 	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_REG, RPF_VLAN_MODE_ACCEPT_UNTAGGED, 1);
 	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_REG, RPF_VLAN_MODE_UNTAGGED_ACTION, RPF_ACTION_HOST);
@@ -3957,16 +3957,11 @@ aq_ifflags_cb(struct ethercom *ec)
 	if ((iffchange & IFF_PROMISC) != 0)
 		error = aq_set_filter(sc);
 
-
 	ecchange = ec->ec_capenable ^ sc->sc_ec_capenable;
-	printf("old EC=%08x\n", sc->sc_ec_capenable);
-	printf("new EC=%08x\n", ec->ec_capenable);
-	printf("CHG EC=%08x\n", ecchange);
 	if (ecchange & ETHERCAP_VLAN_HWTAGGING) {
 		for (i = 0; i < AQ_RXRING_NUM; i++) {
 			AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_REG(i), RX_DMA_DESC_VLAN_STRIP,
 			    (ec->ec_capenable & ETHERCAP_VLAN_HWTAGGING) ? 1 : 0);
-			printf("HWTAGGING[%d] -> %d\n", i, (ec->ec_capenable & ETHERCAP_VLAN_HWTAGGING) ? 1 : 0);
 		}
 	}
 
