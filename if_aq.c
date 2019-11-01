@@ -195,8 +195,6 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_FW_MBOX_ADDR_REG			0x0208
 #define AQ_FW_MBOX_VAL_REG			0x020c
 
-#define AQ_FW_GLB_CPU_SCRATCH_SCP_REG(i)	(0x0300 + (i) * 4)
-
 #define FW2X_LED_MIN_VERSION			0x03010026	/* >= 3.1.38 */
 #define FW2X_LED_REG				0x031c
 #define  FW2X_LED_DEFAULT			0x00000000
@@ -214,10 +212,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define   FW2X_STATUSLED_ORANGE_GREEN_BLINK	8
 #define   FW2X_STATUSLED_GREEN_BLINK		10
 
-#define FW1X_0X370_REG				0x0370
+#define FW_MPI_MBOX_ADDR_REG			0x0360
+#define FW1X_MPI_INIT1_REG			0x0364
+#define FW1X_MPI_INIT2_REG			0x0370
 #define FW1X_MPI_EFUSEADDR_REG			0x0374
-
-#define FW2X_MPI_MBOX_ADDR_REG			0x0360
 #define FW2X_MPI_EFUSEADDR_REG			0x0364
 #define FW2X_MPI_CONTROL_REG			0x0368	/* 64bit */
 #define FW2X_MPI_STATE_REG			0x0370	/* 64bit */
@@ -1674,19 +1672,19 @@ aq_hw_init_ucp(struct aq_softc *sc)
 	int timo;
 
 	if (FW_VERSION_MAJOR(sc) == 1) {
-		if (AQ_READ_REG(sc, FW1X_0X370_REG) == 0) {
+		if (AQ_READ_REG(sc, FW1X_MPI_INIT2_REG) == 0) {
 			uint32_t data;
 			cprng_fast(&data, sizeof(data));
 			data &= 0xfefefefe;
 			data |= 0x02020202;
-			AQ_WRITE_REG(sc, FW1X_0X370_REG, data);
+			AQ_WRITE_REG(sc, FW1X_MPI_INIT2_REG, data);
 		}
-		AQ_WRITE_REG(sc, AQ_FW_GLB_CPU_SCRATCH_SCP_REG(25), 0);
+		AQ_WRITE_REG(sc, FW1X_MPI_INIT1_REG, 0);
 	}
 
 	for (timo = 100; timo > 0; timo--) {
 		sc->sc_mbox_addr =
-		    AQ_READ_REG(sc, FW2X_MPI_MBOX_ADDR_REG);
+		    AQ_READ_REG(sc, FW_MPI_MBOX_ADDR_REG);
 		if (sc->sc_mbox_addr != 0)
 			break;
 		delay(1000);
@@ -1720,7 +1718,7 @@ aq_fw_version_init(struct aq_softc *sc)
 		sc->sc_fw_ops = &aq_fw2x_ops;
 	} else {
 		aprint_error_dev(sc->sc_dev,
-		    "invalid F/W version %d.%d.%d\n",
+		    "Unsupported F/W version %d.%d.%d\n",
 		    FW_VERSION_MAJOR(sc), FW_VERSION_MINOR(sc),
 		    FW_VERSION_BUILD(sc));
 		return ENOTSUP;
