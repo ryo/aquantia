@@ -1305,6 +1305,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	ifp->if_capenable = 0;
 #ifdef CONFIG_LRO_SUPPORT
 	ifp->if_capabilities |= IFCAP_LRO;
+	ifp->if_capenable |= IFCAP_LRO;
 #endif
 #if notyet
 	// TSO
@@ -3741,8 +3742,8 @@ aq_rx_intr(struct aq_rxring *rxring)
 		rxd_hash = le32toh(rxd->wb.rss_hash);
 		rxd_vlan = le16toh(rxd->wb.vlan);
 
-		if (((rxd_status & RXDESC_STATUS_MACERR) != 0) &&
-		    ((rxd_type & RXDESC_TYPE_MAC_DMA_ERR) != 0)) {
+		if ((rxd_status & RXDESC_STATUS_MACERR) ||
+		    (rxd_type & RXDESC_TYPE_MAC_DMA_ERR)) {
 			//XXX
 			printf("DMA_ERR: desc[%d] type=0x%08x, hash=0x%08x, status=0x%08x, pktlen=%u, nextdesc=%u, vlan=0x%x\n",
 			    idx, rxd_type, rxd_hash, rxd_status, rxd_pktlen, rxd_nextdescptr, rxd_vlan);
@@ -3797,7 +3798,7 @@ aq_rx_intr(struct aq_rxring *rxring)
 				if (__SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED)) {
 					ipv4csumstatus = "ipv4 checked";
 					if (__SHIFTOUT(rxd_status, RXDESC_STATUS_IPV4_CSUM_NG) == 0) {
-						i4pcsumstatus = "ipv4 csum OK";
+						ipv4csumstatus = "ipv4 csum OK";
 					} else {
 						ipv4csumstatus = "ipv4 csum NG";
 					}
@@ -3825,7 +3826,7 @@ aq_rx_intr(struct aq_rxring *rxring)
 			    idx, rxd_type, rxd_hash, rxd_status,
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_DD),
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_EOP),
-			    __SHIFTOUT(rxd_status, RXDESC_STATUS_MAC_DMA_ERR),
+			    __SHIFTOUT(rxd_status, RXDESC_STATUS_MACERR),
 			    rxd_pktlen, rxd_nextdescptr, rxd_vlan,
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
