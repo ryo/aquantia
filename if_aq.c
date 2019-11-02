@@ -168,17 +168,22 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <dev/pci/pcireg.h>
 #include <dev/pci/pcidevs.h>
 
+/* driver configuration */
 #define CONFIG_INTR_MODERATION_ENABLE	1	/* ok */
-
-#undef CONFIG_LRO_SUPPORT
-#define CONFIG_RSS_ENABLE		0
-#define CONFIG_OFFLOAD_ENABLE		0
-#define CONFIG_L3_FILTER_ENABLE		0
-
-#define AQ_RSS_HASHKEY_SIZE			40
-#define AQ_RSS_INDIRECTION_TABLE_MAX		64
+#undef CONFIG_LRO_SUPPORT			/* netbsd doesn't support LRO */
+#undef CONFIG_L3_FILTER_SUPPORT			/* netbsd doesn't have L3 filter framework */
+#define CONFIG_RSS_ENABLE		0	/* XXX: doesn't work yet */
 
 
+/* hardware specification */
+#define AQ_RINGS_NUM			32
+#define AQ_RX_DESCRIPTOR_MIN		32
+#define AQ_TX_DESCRIPTOR_MIN		32
+#define AQ_RX_DESCRIPTOR_MAX		8184
+#define AQ_TX_DESCRIPTOR_MAX		8184
+#define AQ_TRAFFICCLASS_NUM		8
+#define AQ_RSS_HASHKEY_SIZE		40
+#define AQ_RSS_INDIRECTION_TABLE_MAX	64
 
 /* registers */
 #define AQ_FW_SOFTRESET_REG			0x0000
@@ -234,7 +239,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_GLB_GENERAL_PROVISIONING9_REG	0x0520
 #define AQ_GLB_NVR_PROVISIONING2_REG		0x0534
 
-#define MPI_DAISY_CHAIN_STATUS_REG		0x0704
+#define FW_MPI_DAISY_CHAIN_STATUS_REG		0x0704
 
 #define AQ_PCI_REG_CONTROL_6_REG		0x1014
 
@@ -245,7 +250,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_INTR_MASK_CLR_REG			0x2070	/* intr mask clear */
 #define AQ_INTR_AUTOMASK_REG			0x2090
 
-/* AQ_INTR_IRQ_MAP_TXRX_REG[32] 0x2100-0x2140 */
+/* AQ_INTR_IRQ_MAP_TXRX_REG[AQ_RINGS_NUM] 0x2100-0x2140 */
 #define AQ_INTR_IRQ_MAP_TXRX_REG(i)		(0x2100 + ((i) / 2) * 4)
 #define AQ_INTR_IRQ_MAP_TX_REG(i)		AQ_INTR_IRQ_MAP_TXRX_REG(i)
 #define  AQ_INTR_IRQ_MAP_TX_IRQMAP(i)		(__BITS(28,24) >> (((i) & 1)*8))
@@ -254,7 +259,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  AQ_INTR_IRQ_MAP_RX_IRQMAP(i)		(__BITS(12,8)  >> (((i) & 1)*8))
 #define  AQ_INTR_IRQ_MAP_RX_EN(i)		(__BIT(15)     >> (((i) & 1)*8))
 
-/* AQ_GEN_INTR_MAP_REG[32] 0x2180-0x2200 */
+/* AQ_GEN_INTR_MAP_REG[AQ_RINGS_NUM] 0x2180-0x2200 */
 #define AQ_GEN_INTR_MAP_REG(i)			(0x2180 + (i) * 4)
 #define  AQ_B0_ERR_INT				8
 
@@ -271,8 +276,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define AQ_MBOXIF_POWER_GATING_CONTROL_REG	0x32a8
 
-#define MPI_RESETCTRL_REG			0x4000
-#define  MPI_RESETCTRL_RESET_DIS		__BIT(29)
+#define FW_MPI_RESETCTRL_REG			0x4000
+#define  FW_MPI_RESETCTRL_RESET_DIS		__BIT(29)
 
 #define RX_SYSCONTROL_REG			0x5000
 #define  RX_SYSCONTROL_RPB_DMA_LOOPBACK		__BIT(6)
@@ -326,7 +331,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_VLAN_FILTER_ACTION			__BITS(18,16)
 #define  RPF_VLAN_FILTER_ID			__BITS(11,0)
 
-/* RPF_ETHERTYPE_FILTER_REG[32] 0x5300-0x5380 */
+/* RPF_ETHERTYPE_FILTER_REG[AQ_RINGS_NUM] 0x5300-0x5380 */
 #define RPF_ETHERTYPE_FILTER_REG(i)		(0x5300 + (i) * 4)
 #define  RPF_ETHERTYPE_FILTER_EN		__BIT(31)
 #define  RPF_ETHERTYPE_FILTER_PRIO_EN		__BIT(30)
@@ -352,10 +357,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_L3_FILTER_L4_ACTION		__BITS(16,18)
 #define  RPF_L3_FILTER_L4_RXQUEUE		__BITS(12,8)
 #define  RPF_L3_FILTER_L4_PROTO			__BITS(2,0)
-#define   RPF_L3_FILTER_L4_PROTF_TCP		0
-#define   RPF_L3_FILTER_L4_PROTF_UDP		1
-#define   RPF_L3_FILTER_L4_PROTF_SCTP		2
-#define   RPF_L3_FILTER_L4_PROTF_ICMP		3
+#define   RPF_L3_FILTER_L4_PROTO_TCP		0
+#define   RPF_L3_FILTER_L4_PROTO_UDP		1
+#define   RPF_L3_FILTER_L4_PROTO_SCTP		2
+#define   RPF_L3_FILTER_L4_PROTO_ICMP		3
 /* parameters of RPF_L3_FILTER_REG[8] */
 #define RPF_L3_FILTER_SRCADDR_REG(i)		(0x53b0 + (i) * 4)
 #define RPF_L3_FILTER_DSTADDR_REG(i)		(0x53d0 + (i) * 4)
@@ -366,7 +371,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RX_FLR_RSS_CONTROL1_EN			__BIT(31)
 
 #define RPF_RPB_RX_TC_UPT_REG			0x54c4
-#define  RPF_RPB_RX_TC_UPT_MASK(tc)		(0x00000007 << ((tc) * 4))
+#define  RPF_RPB_RX_TC_UPT_MASK(i)		(0x00000007 << ((i) * 4))
 
 #define RPF_RSS_KEY_ADDR_REG			0x54d0
 #define  RPF_RSS_KEY_ADDR			__BITS(4,0)
@@ -393,6 +398,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPO_LRO_CONF_PATCHOPTIMIZATION_EN	__BIT(15)
 #define  RPO_LRO_CONF_MIN_PAYLOAD_OF_FIRST_PKT	__BITS(4,0)
 #define RPO_LRO_RSC_MAX_REG			0x5598
+
+/* RPO_LRO_LDES_MAX_REG[32/8] 0x55a0-0x55b0 */
 #define RPO_LRO_LDES_MAX_REG(i)			(0x55a0 + (i / 8) * 4)
 #define  RPO_LRO_LDES_MAX_MASK(i)		(0x00000003 << ((i & 7) * 4))
 #define RPO_LRO_TB_DIV_REG			0x5620
@@ -407,6 +414,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPB_RPF_RX_FC_MODE			__BITS(5,4)
 #define  RPB_RPF_RX_BUF_EN			__BIT(0)
 
+/* RPB_RXB_BUFSIZE_REG[AQ_TRAFFICCLASS_NUM] 0x5710-0x5790 */
 #define RPB_RXB_BUFSIZE_REG(i)			(0x5710 + (i) * 0x10)
 #define  RPB_RXB_BUFSIZE			__BITS(8,0)
 #define RPB_RXB_XOFF_REG(i)			(0x5714 + (i) * 0x10)
@@ -421,11 +429,13 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RX_DMA_INT_DESC_WRWB_EN		__BIT(2)
 #define  RX_DMA_INT_DESC_MODERATE_EN		__BIT(3)
 
+/* RX_INTR_MODERATION_CTL_REG[AQ_RINGS_NUM] 0x5a40-0x5ac0 */
 #define RX_INTR_MODERATION_CTL_REG(i)		(0x5a40 + (i) * 4)
 #define  RX_INTR_MODERATION_CTL_EN		__BIT(1)
 #define  RX_INTR_MODERATION_CTL_MIN		__BITS(15,8)
-#define  RX_INTR_MODERATION_CTL_MAX		__BITS(16,24)
+#define  RX_INTR_MODERATION_CTL_MAX		__BITS(24,16)
 
+/* RX_DMA_DESC_*[AQ_RINGS_NUM] 0x5b00-0x5f00 */
 #define RX_DMA_DESC_BASE_ADDRLSW_REG(i)		(0x5b00 + (i) * 0x20)
 #define RX_DMA_DESC_BASE_ADDRMSW_REG(i)		(0x5b04 + (i) * 0x20)
 #define RX_DMA_DESC_REG(i)			(0x5b08 + (i) * 0x20)
@@ -434,15 +444,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RX_DMA_DESC_HEADER_SPLIT		__BIT(28)
 #define  RX_DMA_DESC_VLAN_STRIP			__BIT(29)
 #define  RX_DMA_DESC_EN				__BIT(31)
-
 #define RX_DMA_DESC_HEAD_PTR_REG(i)		(0x5b0c + (i) * 0x20)
 #define  RX_DMA_DESC_HEAD_PTR			__BITS(12,0)
 #define RX_DMA_DESC_TAIL_PTR_REG(i)		(0x5b10 + (i) * 0x20)
-
 #define RX_DMA_DESC_BUFSIZE_REG(i)		(0x5b18 + (i) * 0x20)
 #define  RX_DMA_DESC_BUFSIZE_DATA		__BITS(4,0)
 #define  RX_DMA_DESC_BUFSIZE_HDR		__BITS(12,8)
 
+/* RX_DMA_DCAD_REG[AQ_RINGS_NUM] 0x6100-0x6180 */
 #define RX_DMA_DCAD_REG(i)				(0x6100 + (i) * 4)
 #define  RX_DMA_DCAD_CPUID				__BITS(7,0)
 #define  RX_DMA_DCAD_PAYLOAD_EN			__BIT(29)
@@ -476,14 +485,15 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TPS_DESC_TC_ARB_MODE			__BITS(1,0)
 #define TPS_DATA_TC_ARB_MODE_REG		0x7100
 #define  TPS_DATA_TC_ARB_MODE			__BIT(0)
-#define TPS_DATA_TCTCREDIT_MAX_REG(tc)		(0x7110 + (tc) * 4)
-#define  TPS_DATA_TCTCREDIT_MAX			__BITS(16,27)
-#define TPS_DATA_TCTWEIGHT_REG(tc)		TPS_DATA_TCTCREDIT_MAX_REG(tc)
-#define  TPS_DATA_TCTWEIGHT			__BITS(8,0)
-#define TPS_DESC_TCTCREDIT_MAX_REG(tc)		(0x7210 + (tc) * 4)
-#define  TPS_DESC_TCTCREDIT_MAX			__BITS(16,27)
-#define TPS_DESC_TCTWEIGHT_REG(tc)		TPS_DESC_TCTCREDIT_MAX_REG(tc)
-#define  TPS_DESC_TCTWEIGHT			__BITS(8,0)
+
+/* TPS_DATA_TCT_REG[AQ_TRAFFICCLASS_NUM] 0x7110-0x7130 */
+#define TPS_DATA_TCT_REG(i)			(0x7110 + (i) * 4)
+#define  TPS_DATA_TCT_CREDIT_MAX		__BITS(16,27)
+#define  TPS_DATA_TCT_WEIGHT			__BITS(8,0)
+/* TPS_DATA_TCT_REG[AQ_TRAFFICCLASS_NUM] 0x7210-0x7230 */
+#define TPS_DESC_TCT_REG(i)			(0x7210 + (i) * 4)
+#define  TPS_DESC_TCT_CREDIT_MAX		__BITS(16,27)
+#define  TPS_DESC_TCT_WEIGHT			__BITS(8,0)
 
 #define AQ_HW_TXBUF_MAX		160
 #define AQ_HW_RXBUF_MAX		320
@@ -505,9 +515,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TPB_TX_BUF_SCP_INS_EN			__BIT(2)
 #define  TPB_TX_BUF_TC_MODE_EN			__BIT(8)
 
-#define TPB_TXB_BUFSIZE_REG(buffer)		(0x7910 + (buffer) * 0x10)
+/* TPB_TXB_BUFSIZE_REG[AQ_TRAFFICCLASS_NUM] 0x7910-7990 */
+#define TPB_TXB_BUFSIZE_REG(i)			(0x7910 + (i) * 0x10)
 #define  TPB_TXB_BUFSIZE			__BITS(7,0)
-#define TPB_TXB_THRESH_REG(buffer)		(0x7914 + (buffer) * 0x10)
+#define TPB_TXB_THRESH_REG(i)			(0x7914 + (i) * 0x10)
 #define  TPB_TXB_THRESH_HI			__BITS(16,28)
 #define  TPB_TXB_THRESH_LO			__BITS(12,0)
 
@@ -516,18 +527,19 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TX_DMA_INT_DESC_WRWB_EN		__BIT(1)
 #define  TX_DMA_INT_DESC_MODERATE_EN		__BIT(4)
 
-#define TX_DMA_DESC_BASE_ADDRLSW_REG(i)		(0x7c00 + (i) * 64)
-#define TX_DMA_DESC_BASE_ADDRMSW_REG(i)		(0x7c04 + (i) * 64)
-#define TX_DMA_DESC_REG(i)			(0x7c08 + (i) * 64)
+/* TX_DMA_DESC_*[AQ_RINGS_NUM] 0x7c00-0x8400 */
+#define TX_DMA_DESC_BASE_ADDRLSW_REG(i)		(0x7c00 + (i) * 0x40)
+#define TX_DMA_DESC_BASE_ADDRMSW_REG(i)		(0x7c04 + (i) * 0x40)
+#define TX_DMA_DESC_REG(i)			(0x7c08 + (i) * 0x40)
 #define  TX_DMA_DESC_LEN			__BITS(12, 3)	/* TXD_NUM/8 */
 #define  TX_DMA_DESC_EN				__BIT(31)
-#define TX_DMA_DESC_HEAD_PTR_REG(i)		(0x7c0c + (i) * 64)	/* index of desc */
+#define TX_DMA_DESC_HEAD_PTR_REG(i)		(0x7c0c + (i) * 0x40)	/* index of desc */
 #define  TX_DMA_DESC_HEAD_PTR			__BITS(12,0)
-#define TX_DMA_DESC_TAIL_PTR_REG(i)		(0x7c10 + (i) * 64)	/* index of desc */
-
-#define TX_DMA_DESC_WRWB_THRESH_REG(i)		(0x7c18 + (i) * 64)
+#define TX_DMA_DESC_TAIL_PTR_REG(i)		(0x7c10 + (i) * 0x40)	/* index of desc */
+#define TX_DMA_DESC_WRWB_THRESH_REG(i)		(0x7c18 + (i) * 0x40)
 #define  TX_DMA_DESC_WRWB_THRESH		__BITS(14,8)
 
+/* TDM_DCAD_REG[AQ_RINGS_NUM] 0x8400-0x8480 */
 #define TDM_DCAD_REG(i)				(0x8400 + (i) * 4)
 #define  TDM_DCAD_CPUID				__BITS(7,0)
 #define  TDM_DCAD_CPUID_EN			__BIT(31)
@@ -536,10 +548,11 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TDM_DCA_EN				__BIT(31)
 #define  TDM_DCA_MODE				__BITS(3,0)
 
+/* TX_INTR_MODERATION_CTL_REG[AQ_RINGS_NUM] 0x8980-0x8a00 */
 #define TX_INTR_MODERATION_CTL_REG(i)		(0x8980 + (i) * 4)
 #define  TX_INTR_MODERATION_CTL_EN		__BIT(1)
 #define  TX_INTR_MODERATION_CTL_MIN		__BITS(15,8)
-#define  TX_INTR_MODERATION_CTL_MAX		__BITS(16,24)
+#define  TX_INTR_MODERATION_CTL_MAX		__BITS(24,16)
 
 #define FW2X_CTRL_10BASET_HD			__BIT(0)
 #define FW2X_CTRL_10BASET_FD			__BIT(1)
@@ -851,13 +864,6 @@ typedef struct aq_tx_desc {
 #define AQ_TXDESC_CTL2_CTX_IDX		__BIT(12)
 } __packed aq_tx_desc_t;
 
-/* hardware restrictions */
-#define AQ_RINGS_MAX	32
-#define AQ_RXD_MIN	32
-#define AQ_TXD_MIN	32
-#define AQ_RXD_MAX	8184	/* = 0x1ff8 = 8192 - 8 */
-#define AQ_TXD_MAX	8184	/* = 0x1ff8 = 8192 - 8 */
-
 /* configuration for this driver */
 #define AQ_TXRING_NUM	8
 #define AQ_RXRING_NUM	8
@@ -964,7 +970,6 @@ struct aq_softc {
 
 	bool sc_intr_moderation_enable;
 	bool sc_rss_enable;
-	bool sc_offload_enable;
 	bool sc_l3_filter_enable;
 
 	uint32_t sc_rss_key[AQ_RSS_HASHKEY_SIZE / sizeof(uint32_t)];
@@ -1232,8 +1237,9 @@ aq_attach(device_t parent, device_t self, void *aux)
 
 	sc->sc_intr_moderation_enable = CONFIG_INTR_MODERATION_ENABLE;
 	sc->sc_rss_enable = CONFIG_RSS_ENABLE;
-	sc->sc_offload_enable = CONFIG_OFFLOAD_ENABLE;
-	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_ENABLE;
+#ifdef CONFIG_L3_FILTER_SUPPORT
+	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_SUPPORT;
+#endif
 
 	sc->sc_txringnum = AQ_TXRING_NUM;
 	sc->sc_rxringnum = AQ_RXRING_NUM;
@@ -1391,7 +1397,7 @@ global_software_reset(struct aq_softc *sc)
 
 	AQ_WRITE_REG_BIT(sc, RX_SYSCONTROL_REG, RX_SYSCONTROL_RESET_DIS, 0);
 	AQ_WRITE_REG_BIT(sc, TX_SYSCONTROL_REG, TX_SYSCONTROL_RESET_DIS, 0);
-	AQ_WRITE_REG_BIT(sc, MPI_RESETCTRL_REG, MPI_RESETCTRL_RESET_DIS, 0);
+	AQ_WRITE_REG_BIT(sc, FW_MPI_RESETCTRL_REG, FW_MPI_RESETCTRL_RESET_DIS, 0);
 
 	v = AQ_READ_REG(sc, AQ_FW_SOFTRESET_REG);
 	v &= ~AQ_FW_SOFTRESET_DIS;
@@ -1502,7 +1508,7 @@ mac_soft_reset_flb(struct aq_softc *sc)
 		uint32_t flb_status;
 		for (timo = 0; timo < 1000; timo++) {
 			flb_status = AQ_READ_REG(sc,
-			    MPI_DAISY_CHAIN_STATUS_REG) & 0x10;
+			    FW_MPI_DAISY_CHAIN_STATUS_REG) & 0x10;
 			if (flb_status != 0)
 				break;
 			msec_delay(1);
@@ -1578,7 +1584,7 @@ aq_fw_reset(struct aq_softc *sc)
 	ver = AQ_READ_REG(sc, AQ_FW_VERSION_REG);
 
 	for (i = 1000; i > 0; i--) {
-		v = AQ_READ_REG(sc, MPI_DAISY_CHAIN_STATUS_REG);
+		v = AQ_READ_REG(sc, FW_MPI_DAISY_CHAIN_STATUS_REG);
 		bootExitCode = AQ_READ_REG(sc, FW_BOOT_EXIT_CODE_REG);
 		if (v != 0x06000000 || bootExitCode != 0)
 			break;
@@ -2155,7 +2161,7 @@ aq_set_capability(struct aq_softc *sc)
 	v = (8 < AQ_B0_LRO_RXD_MAX) ? 3 :
 	    (4 < AQ_B0_LRO_RXD_MAX) ? 2 :
 	    (2 < AQ_B0_LRO_RXD_MAX) ? 1 : 0;
-	for (i = 0; i < AQ_RINGS_MAX; i++) {
+	for (i = 0; i < AQ_RINGS_NUM; i++) {
 		AQ_WRITE_REG_BIT(sc, RPO_LRO_LDES_MAX_REG(i), RPO_LRO_LDES_MAX_MASK(i), v);
 	}
 
@@ -2476,22 +2482,58 @@ aq_hw_interrupt_moderation_set(struct aq_softc *sc)
 	int i;
 
 	if (sc->sc_intr_moderation_enable) {
+		unsigned int tx_min, rx_min;	/* 0-255 */
+		unsigned int tx_max, rx_max;	/* 0-511? */
+
+		switch (sc->sc_link_rate) {
+		case AQ_LINK_100M:
+			tx_min = 0x4f;
+			tx_max = 0xff;
+			rx_min = 0x04;
+			rx_max = 0x50;
+			break;
+		case AQ_LINK_1G:
+		default:
+			tx_min = 0x4f;
+			tx_max = 0xff;
+			rx_min = 0x30;
+			rx_max = 0x80;
+			break;
+		case AQ_LINK_2G5:
+			tx_min = 0x4f;
+			tx_max = 0xff;
+			rx_min = 0x18;
+			rx_max = 0xe0;
+			break;
+		case AQ_LINK_5G:
+			tx_min = 0x4f;
+			tx_max = 0xff;
+			rx_min = 0x0c;
+			rx_max = 0x70;
+			break;
+		case AQ_LINK_10G:
+			tx_min = 0x4f;
+			tx_max = 0x1ff;
+			rx_min = 0x50;	/* 0x06 */
+			rx_max = 0x78;	/* 0x38 */
+			break;
+		}
+
 		AQ_WRITE_REG_BIT(sc, TX_DMA_INT_DESC_WRWB_EN_REG, TX_DMA_INT_DESC_WRWB_EN, 0);
 		AQ_WRITE_REG_BIT(sc, TX_DMA_INT_DESC_WRWB_EN_REG, TX_DMA_INT_DESC_MODERATE_EN, 1);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_INT_DESC_WRWB_EN_REG, RX_DMA_INT_DESC_WRWB_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_INT_DESC_WRWB_EN_REG, RX_DMA_INT_DESC_MODERATE_EN, 1);
 
-		//XXX: should be configured according to link speed...
 		for (i = 0; i < sc->sc_txringnum; i++) {
 			AQ_WRITE_REG(sc, TX_INTR_MODERATION_CTL_REG(i),
-			    __SHIFTIN(0x0f, TX_INTR_MODERATION_CTL_MIN) |
-			    __SHIFTIN(0x1ff, TX_INTR_MODERATION_CTL_MAX) |
+			    __SHIFTIN(tx_min, TX_INTR_MODERATION_CTL_MIN) |
+			    __SHIFTIN(tx_max, TX_INTR_MODERATION_CTL_MAX) |
 			    TX_INTR_MODERATION_CTL_EN);
 		}
 		for (i = 0; i < sc->sc_rxringnum; i++) {
 			AQ_WRITE_REG(sc, RX_INTR_MODERATION_CTL_REG(i),
-			    __SHIFTIN(0x30, RX_INTR_MODERATION_CTL_MIN) |
-			    __SHIFTIN(0x80, RX_INTR_MODERATION_CTL_MAX) |
+			    __SHIFTIN(rx_min, RX_INTR_MODERATION_CTL_MIN) |
+			    __SHIFTIN(rx_max, RX_INTR_MODERATION_CTL_MAX) |
 			    RX_INTR_MODERATION_CTL_EN);
 		}
 
@@ -2527,10 +2569,10 @@ aq_hw_qos_set(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, TPS_DESC_TC_ARB_MODE_REG, TPS_DESC_TC_ARB_MODE, 0);
 	AQ_WRITE_REG_BIT(sc, TPS_DATA_TC_ARB_MODE_REG, TPS_DATA_TC_ARB_MODE, 0);
 
-	AQ_WRITE_REG_BIT(sc, TPS_DATA_TCTCREDIT_MAX_REG(tc), TPS_DATA_TCTCREDIT_MAX, 0xfff);
-	AQ_WRITE_REG_BIT(sc, TPS_DATA_TCTWEIGHT_REG(tc), TPS_DATA_TCTWEIGHT, 0x64);
-	AQ_WRITE_REG_BIT(sc, TPS_DESC_TCTCREDIT_MAX_REG(tc), TPS_DESC_TCTCREDIT_MAX, 0x50);
-	AQ_WRITE_REG_BIT(sc, TPS_DESC_TCTWEIGHT_REG(tc), TPS_DESC_TCTWEIGHT, 0x1e);
+	AQ_WRITE_REG_BIT(sc, TPS_DATA_TCT_REG(tc), TPS_DATA_TCT_CREDIT_MAX, 0xfff);
+	AQ_WRITE_REG_BIT(sc, TPS_DATA_TCT_REG(tc), TPS_DATA_TCT_WEIGHT, 0x64);
+	AQ_WRITE_REG_BIT(sc, TPS_DESC_TCT_REG(tc), TPS_DESC_TCT_CREDIT_MAX, 0x50);
+	AQ_WRITE_REG_BIT(sc, TPS_DESC_TCT_REG(tc), TPS_DESC_TCT_WEIGHT, 0x1e);
 
 	/* Tx buf size */
 	tc = 0;
@@ -2550,7 +2592,7 @@ aq_hw_qos_set(struct aq_softc *sc)
 	/* QoS 802.1p priority -> TC mapping */
 	int i_priority;
 	for (i_priority = 0; i_priority < 8; i_priority++) {
-		AQ_WRITE_REG_BIT(sc, RPF_RPB_RX_TC_UPT_REG, RPF_RPB_RX_TC_UPT_MASK(0), i_priority);
+		AQ_WRITE_REG_BIT(sc, RPF_RPB_RX_TC_UPT_REG, RPF_RPB_RX_TC_UPT_MASK(i_priority), 0);
 	}
 }
 
@@ -2655,7 +2697,7 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 		 */
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_EN, 1);
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_PROTO_EN, 1);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_PROTO, RPF_L3_FILTER_L4_PROTF_UDP);
+		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_PROTO, RPF_L3_FILTER_L4_PROTO_UDP);
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_RXQUEUE_EN, 1);
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_RXQUEUE, 0);	/* -> rxring[0] */
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_ACTION, RPF_ACTION_HOST);
