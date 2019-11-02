@@ -28,7 +28,7 @@
 //	lock
 //
 //	hardware offloading (LRO,TSO,RX-L4CSUM problem)
-//	counters, evcnt
+//	ifp counters, evcnt
 //	cleanup source
 //	fulldup control? (100baseTX)
 //	IP header offset 4n+2ÌäÂê
@@ -1297,11 +1297,11 @@ aq_attach(device_t parent, device_t self, void *aux)
 	sc->sc_ethercom.ec_capenable = 0;
 #if notyet
 	// XXX: NOTYET
-	sc->sc_ethercom.ec_capabilities |= ETHERCAP_JUMBO_MTU;
 	sc->sc_ethercom.ec_capabilities |= ETHERCAP_EEE;
 	sc->sc_ethercom.ec_capabilities |= ETHERCAP_VLAN_HWFILTER;
 #endif
 	sc->sc_ethercom.ec_capabilities |=
+	    ETHERCAP_JUMBO_MTU |
 	    ETHERCAP_VLAN_MTU |
 	    ETHERCAP_VLAN_HWTAGGING;
 	sc->sc_ethercom.ec_capenable |=
@@ -3739,7 +3739,7 @@ aq_rx_intr(struct aq_rxring *rxring)
 	struct mbuf *m, *m0, *mprev;
 	uint32_t rxd_type, rxd_hash __unused;
 	uint16_t rxd_status, rxd_pktlen, rxd_nextdescptr __unused, rxd_vlan __unused;
-	unsigned int idx, amount, n;
+	unsigned int idx, n;
 
 	if (rxring->ring_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR))
 		return 0;
@@ -3763,7 +3763,6 @@ aq_rx_intr(struct aq_rxring *rxring)
 #endif
 
 	m0 = mprev = NULL;
-	amount = 0;
 	for (idx = rxring->ring_readidx, n = 0;
 	    idx != AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR);
 	    idx = RXRING_NEXTIDX(idx), n++) {
@@ -3822,7 +3821,7 @@ aq_rx_intr(struct aq_rxring *rxring)
 				"UDP",
 				"SCTP",
 				"ICMP",
-				"PKTTYPE_PROTO4",
+				"ARP",
 				"PKTTYPE_PROTO5", 
 				"PKTTYPE_PROTO6", 
 				"PKTTYPE_PROTO7"
@@ -3899,79 +3898,80 @@ aq_rx_intr(struct aq_rxring *rxring)
 		m = rxring->ring_mbufs[idx].m;
 		rxring->ring_mbufs[idx].m = NULL;
 
-		m->m_len = rxd_pktlen;
-#ifdef XXX_DUMP_RX_MBUF
-		hexdump(printf, "mbuf", m->m_data, m->m_len);	// dump this mbuf
-#endif
-
 		if (m0 == NULL) {
 			m0 = m;
-			amount = m->m_len;
 		} else {
-			amount += m->m_len;
 			if (m->m_flags & M_PKTHDR)
 				m_remove_pkthdr(m);
 			mprev->m_next = m;
 		}
 		mprev = m;
 
-		if ((rxd_status & RXDESC_STATUS_EOP) != 0) {
-			/* last buffer */
-
-			if (m0 == m) {	/* XXX: do csum test for multi descriptors/JUMBO frame */
-				if ((sc->sc_ethercom.ec_capenable & ETHERCAP_VLAN_HWTAGGING) &&
-				    (__SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN) ||
-				    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE))) {
-					vlan_set_tag(m0, rxd_vlan);
-				}
-
-				unsigned int pkttype_eth = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_ETHER);
-				if ((ifp->if_capabilities & IFCAP_CSUM_IPv4_Rx) &&
-				    (pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) &&
-				    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED)) {
-					m0->m_pkthdr.csum_flags |= M_CSUM_IPv4;
-					if (__SHIFTOUT(rxd_status, RXDESC_STATUS_IPV4_CSUM_NG))
-						m0->m_pkthdr.csum_flags |= M_CSUM_IPv4_BAD;
-				}
-
-#if notyet
-				//XXX: NIC always marks BAD for fragmented packet? need to care.
-				if (__SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED)) {
-					bool need_result = false;
-					unsigned int pkttype_proto = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_PROTO);
-
-					if (pkttype_proto == RXDESC_TYPE_PKTTYPE_PROTO_TCP) {
-						if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) && (ifp->if_capabilities & IFCAP_CSUM_TCPv4_Rx)) {
-							m0->m_pkthdr.csum_flags |= M_CSUM_TCPv4;
-							need_result = true;
-						} else if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV6) && (ifp->if_capabilities & IFCAP_CSUM_TCPv6_Rx)) {
-							m0->m_pkthdr.csum_flags |= M_CSUM_TCPv6;
-							need_result = true;
-						}
-					} else if (pkttype_proto == RXDESC_TYPE_PKTTYPE_PROTO_UDP) {
-						if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) && (ifp->if_capabilities & IFCAP_CSUM_UDPv4_Rx)) {
-							m0->m_pkthdr.csum_flags |= M_CSUM_UDPv4;
-							need_result = true;
-						} else if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV6) && (ifp->if_capabilities & IFCAP_CSUM_UDPv6_Rx)) {
-							m0->m_pkthdr.csum_flags |= M_CSUM_UDPv6;
-							need_result = true;
-						}
-					}
-					if (need_result &&
-					    (__SHIFTOUT(rxd_status, RXDESC_STATUS_TCPUDP_CSUM_ERROR) ||
-					    !__SHIFTOUT(rxd_status, RXDESC_STATUS_TCPUDP_CSUM_OK))) {
-						m0->m_pkthdr.csum_flags |= M_CSUM_TCP_UDP_BAD;
-					}
-				}
+		if ((rxd_status & RXDESC_STATUS_EOP) == 0) {
+			m->m_len = MCLBYTES;
+#ifdef XXX_DUMP_RX_MBUF
+			hexdump(printf, "mbuf (continue)", m->m_data, m->m_len);
 #endif
+		} else {
+			/* last buffer */
+			m->m_len = rxd_pktlen % MCLBYTES;
+			m0->m_pkthdr.len = rxd_pktlen;
+
+#ifdef XXX_DUMP_RX_MBUF
+			hexdump(printf, "mbuf (EOP)", m->m_data, m->m_len);
+#endif
+
+			/* VLAN offloading */
+			if ((sc->sc_ethercom.ec_capenable & ETHERCAP_VLAN_HWTAGGING) &&
+			    (__SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN) ||
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE))) {
+				vlan_set_tag(m0, rxd_vlan);
 			}
 
+			/* Checksum offloading */
+			unsigned int pkttype_eth = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_ETHER);
+			if ((ifp->if_capabilities & IFCAP_CSUM_IPv4_Rx) &&
+			    (pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) &&
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED)) {
+				m0->m_pkthdr.csum_flags |= M_CSUM_IPv4;
+				if (__SHIFTOUT(rxd_status, RXDESC_STATUS_IPV4_CSUM_NG))
+					m0->m_pkthdr.csum_flags |= M_CSUM_IPv4_BAD;
+			}
+#if notyet
+			//XXX: NIC always marks BAD for fragmented packet? need to care.
+			if (__SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED)) {
+				bool need_result = false;
+				unsigned int pkttype_proto = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_PROTO);
+
+				if (pkttype_proto == RXDESC_TYPE_PKTTYPE_PROTO_TCP) {
+					if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) && (ifp->if_capabilities & IFCAP_CSUM_TCPv4_Rx)) {
+						m0->m_pkthdr.csum_flags |= M_CSUM_TCPv4;
+						need_result = true;
+					} else if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV6) && (ifp->if_capabilities & IFCAP_CSUM_TCPv6_Rx)) {
+						m0->m_pkthdr.csum_flags |= M_CSUM_TCPv6;
+						need_result = true;
+					}
+				} else if (pkttype_proto == RXDESC_TYPE_PKTTYPE_PROTO_UDP) {
+					if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) && (ifp->if_capabilities & IFCAP_CSUM_UDPv4_Rx)) {
+						m0->m_pkthdr.csum_flags |= M_CSUM_UDPv4;
+						need_result = true;
+					} else if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV6) && (ifp->if_capabilities & IFCAP_CSUM_UDPv6_Rx)) {
+						m0->m_pkthdr.csum_flags |= M_CSUM_UDPv6;
+						need_result = true;
+					}
+				}
+				if (need_result &&
+				    (__SHIFTOUT(rxd_status, RXDESC_STATUS_TCPUDP_CSUM_ERROR) ||
+				    !__SHIFTOUT(rxd_status, RXDESC_STATUS_TCPUDP_CSUM_OK))) {
+					m0->m_pkthdr.csum_flags |= M_CSUM_TCP_UDP_BAD;
+				}
+			}
+#endif
+
 			m_set_rcvif(m0, ifp);
-			m0->m_pkthdr.len = amount;
-			if_percpuq_enqueue(ifp->if_percpuq, m);
+			if_percpuq_enqueue(ifp->if_percpuq, m0);
 
 			m0 = mprev = NULL;
-			amount = 0;
 		}
 
 		/* refill, and update tail */
