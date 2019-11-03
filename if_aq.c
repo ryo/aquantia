@@ -3940,27 +3940,27 @@ aq_rx_intr(struct aq_rxring *rxring)
 #if notyet
 			//XXX: NIC always marks BAD for fragmented packet? need to care.
 			if (__SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED)) {
-				bool need_result = false;
+				bool checked = false;
 				unsigned int pkttype_proto = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_PROTO);
 
 				if (pkttype_proto == RXDESC_TYPE_PKTTYPE_PROTO_TCP) {
 					if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) && (ifp->if_capabilities & IFCAP_CSUM_TCPv4_Rx)) {
 						m0->m_pkthdr.csum_flags |= M_CSUM_TCPv4;
-						need_result = true;
+						checked = true;
 					} else if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV6) && (ifp->if_capabilities & IFCAP_CSUM_TCPv6_Rx)) {
 						m0->m_pkthdr.csum_flags |= M_CSUM_TCPv6;
-						need_result = true;
+						checked = true;
 					}
 				} else if (pkttype_proto == RXDESC_TYPE_PKTTYPE_PROTO_UDP) {
 					if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) && (ifp->if_capabilities & IFCAP_CSUM_UDPv4_Rx)) {
 						m0->m_pkthdr.csum_flags |= M_CSUM_UDPv4;
-						need_result = true;
+						checked = true;
 					} else if ((pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV6) && (ifp->if_capabilities & IFCAP_CSUM_UDPv6_Rx)) {
 						m0->m_pkthdr.csum_flags |= M_CSUM_UDPv6;
-						need_result = true;
+						checked = true;
 					}
 				}
-				if (need_result &&
+				if (checked &&
 				    (__SHIFTOUT(rxd_status, RXDESC_STATUS_TCPUDP_CSUM_ERROR) ||
 				    !__SHIFTOUT(rxd_status, RXDESC_STATUS_TCPUDP_CSUM_OK))) {
 					m0->m_pkthdr.csum_flags |= M_CSUM_TCP_UDP_BAD;
