@@ -44,6 +44,7 @@
 //#define XXX_FORCE_32BIT_PA
 //#define XXX_DEBUG_PMAP_EXTRACT
 #define USE_CALLOUT_TICK
+//#define USE_MSIX
 //#define XXX_DUMP_STAT
 //#define XXX_INTR_DEBUG
 //#define XXX_RXINTR_DEBUG
@@ -173,6 +174,15 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #undef CONFIG_LRO_SUPPORT			/* netbsd doesn't support LRO */
 #undef CONFIG_L3_FILTER_SUPPORT			/* netbsd doesn't have L3 filter framework */
 #define CONFIG_RSS_ENABLE		0	/* XXX: doesn't work yet */
+
+#define AQ_MAX_NINTR			8
+#define AQ_TXRING_NUM			8
+#define AQ_RXRING_NUM			8
+CTASSERT(AQ_RXRING_NUM == AQ_TXRING_NUM);	//XXX
+#define AQ_TXD_NUM			2048	/* per ring. must be 8*n */
+#define AQ_RXD_NUM			2048	/* per ring. must be 8*n */
+
+#define LINKSTAT_IRQ			31	/* shared with ring[31] */
 
 
 /* hardware specification */
@@ -864,13 +874,6 @@ typedef struct aq_tx_desc {
 #define AQ_TXDESC_CTL2_CTX_IDX		__BIT(12)
 } __packed aq_tx_desc_t;
 
-/* configuration for this driver */
-#define AQ_TXRING_NUM	8
-#define AQ_RXRING_NUM	8
-#define AQ_TXD_NUM	2048	/* per ring. must be 8*n */
-#define AQ_RXD_NUM	2048	/* per ring. must be 8*n */
-
-#define LINKSTAT_IRQ	31	/* shared with ring[31] */
 
 
 struct aq_txring {
@@ -926,7 +929,9 @@ struct aq_softc {
 	bus_size_t sc_iosize;
 	bus_dma_tag_t sc_dmat;;
 
-	void *sc_intrhand;
+	void *sc_ihs[AQ_MAX_NINTR];
+	pci_intr_handle_t *sc_intrs;
+	int sc_nintrs;
 
 	struct aq_txring sc_txring[AQ_TXRING_NUM];
 	struct aq_rxring sc_rxring[AQ_RXRING_NUM];
@@ -1013,6 +1018,11 @@ struct aq_softc {
 static int aq_match(device_t, cfdata_t, void *);
 static void aq_attach(device_t, device_t, void *);
 static int aq_detach(device_t, int);
+
+static int aq_setup_legacy(struct aq_softc *);
+#ifdef USE_MSIX
+static int aq_setup_msix(struct aq_softc *);
+#endif
 
 static int aq_ifmedia_change(struct ifnet * const);
 static void aq_ifmedia_status(struct ifnet * const, struct ifmediareq *);
@@ -1180,9 +1190,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 	pcitag_t tag;
 	pcireg_t memtype, bar;
 	const struct aq_product *aqp;
-	pci_intr_handle_t ih;
-	const char *intrstr;
-	char intrbuf[PCI_INTRSTR_LEN];
+	pci_intr_type_t max_type = PCI_INTR_TYPE_MSIX;
+	int counts[PCI_INTR_TYPE_SIZE];
 	int error;
 
 	sc->sc_dev = self;
@@ -1219,21 +1228,61 @@ aq_attach(device_t parent, device_t self, void *aux)
 		return;
 	}
 
-	if (pci_intr_map(pa, &ih)) {
-		aprint_error_dev(sc->sc_dev, "unable to map interrupt\n");
+	memset(counts, 0, sizeof(counts));
+#ifdef USE_MSIX
+	counts[PCI_INTR_TYPE_INTX] = 1;
+	counts[PCI_INTR_TYPE_MSI]  = 1;
+	counts[PCI_INTR_TYPE_MSIX] = AQ_MAX_NINTR;
+ alloc_retry:
+	if (pci_intr_alloc(pa, &sc->sc_intrs, counts, max_type) != 0) {
+		aprint_error_dev(sc->sc_dev, "failed to allocate interrupt\n");
 		return;
 	}
-	intrstr = pci_intr_string(pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_intrhand = pci_intr_establish_xname(pc, ih, IPL_NET, aq_intr,
-	    sc, device_xname(self));
-	if (sc->sc_intrhand == NULL) {
-		aprint_error_dev(self, "unable to establish interrupt");
-		if (intrstr != NULL)
-			aprint_error(" at %s", intrstr);
-		aprint_error("\n");
+	if (pci_intr_type(pc, sc->sc_intrs[0]) == PCI_INTR_TYPE_MSIX) {
+		error = aq_setup_msix(sc);
+		if (error) {
+			pci_intr_release(pc, sc->sc_intrs,
+			    counts[PCI_INTR_TYPE_MSIX]);
+
+			/* Setup for MSI: Disable MSI-X */
+			max_type = PCI_INTR_TYPE_MSI;
+			counts[PCI_INTR_TYPE_MSI] = 1;
+			counts[PCI_INTR_TYPE_INTX] = 1;
+			goto alloc_retry;
+		}
+	} else if (pci_intr_type(pc, sc->sc_intrs[0]) == PCI_INTR_TYPE_MSI) {
+		aq_adjust_qnum(sc, 0);	/* Must not use multiqueue */
+		error = aq_setup_legacy(sc);
+		if (error) {
+			pci_intr_release(sc->sc_pc, sc->sc_intrs,
+			    counts[PCI_INTR_TYPE_MSI]);
+
+			/* The next try is for INTx: Disable MSI */
+			max_type = PCI_INTR_TYPE_INTX;
+			counts[PCI_INTR_TYPE_INTX] = 1;
+			goto alloc_retry;
+		}
+	} else {
+		aq_adjust_qnum(sc, 0);	/* Must not use multiqueue */
+		error = aq_setup_legacy(sc);
+		if (error) {
+			pci_intr_release(sc->sc_pc, sc->sc_intrs,
+			    counts[PCI_INTR_TYPE_INTX]);
+			return;
+		}
+	}
+#else
+	counts[PCI_INTR_TYPE_INTX] = 1;
+	counts[PCI_INTR_TYPE_MSI]  = 0;
+	counts[PCI_INTR_TYPE_MSIX] = 0;
+	if (pci_intr_alloc(pa, &sc->sc_intrs, counts, max_type) != 0) {
+		aprint_error_dev(sc->sc_dev, "failed to allocate interrupt\n");
 		return;
 	}
-	aprint_normal_dev(self, "interrupting at %s\n", intrstr);
+	error = aq_setup_legacy(sc);
+	if (error != 0)
+		return;
+#endif
 
 	sc->sc_intr_moderation_enable = CONFIG_INTR_MODERATION_ENABLE;
 	sc->sc_rss_enable = CONFIG_RSS_ENABLE;
@@ -1360,17 +1409,21 @@ aq_detach(device_t self, int flags __unused)
 {
 	struct aq_softc *sc = device_private(self);
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	int s;
+	int i, s;
 
 	if (sc->sc_iosize != 0) {
 		s = splnet();
 		aq_stop(ifp, 0);
 		splx(s);
 
-		if (sc->sc_intrhand != NULL) {
-			pci_intr_disestablish(sc->sc_pc, sc->sc_intrhand);
-			sc->sc_intrhand = NULL;
+		for (i = 0; i < sc->sc_nintrs; i++) {
+			if (sc->sc_ihs[i] != NULL) {
+				pci_intr_disestablish(sc->sc_pc, sc->sc_ihs[i]);
+				sc->sc_ihs[i] = NULL;
+			}
 		}
+		pci_intr_release(sc->sc_pc, sc->sc_intrs, sc->sc_nintrs);
+		sc->sc_intrs = NULL;
 
 		aq_txrx_rings_free(sc);
 
@@ -1389,6 +1442,36 @@ aq_detach(device_t self, int flags __unused)
 
 	return 0;
 }
+
+static int
+aq_setup_legacy(struct aq_softc *sc)
+{
+	pci_chipset_tag_t pc = sc->sc_pc;
+	const char *intrstr;
+	char intrbuf[PCI_INTRSTR_LEN];
+
+	intrstr = pci_intr_string(pc, sc->sc_intrs[0], intrbuf, sizeof(intrbuf));
+	sc->sc_ihs[0] = pci_intr_establish_xname(pc, sc->sc_intrs[0], IPL_NET, aq_intr,
+	    sc, device_xname(sc->sc_dev));
+	if (sc->sc_ihs[0] == NULL) {
+		aprint_error_dev(sc->sc_dev, "unable to establish %s",
+		    (pci_intr_type(pc, sc->sc_intrs[0]) == PCI_INTR_TYPE_MSI) ?
+		    "MSI" : "INTx");
+		return ENOMEM;
+	}
+	aprint_normal_dev(sc->sc_dev, "interrupting at %s\n", intrstr);
+	sc->sc_nintrs = 1;
+
+	return 0;
+}
+
+#ifdef USE_MSIX
+static int
+aq_setup_msix(struct aq_softc *sc)
+{
+	return ENOTSUP;
+}
+#endif
 
 static void
 global_software_reset(struct aq_softc *sc)
