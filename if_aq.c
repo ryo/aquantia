@@ -43,10 +43,10 @@
 
 //#define XXX_FORCE_32BIT_PA
 //#define XXX_DEBUG_PMAP_EXTRACT
-#define USE_CALLOUT_TICK
+//#define USE_CALLOUT_TICK
 //#define USE_MSIX
 //#define XXX_DUMP_STAT
-//#define XXX_INTR_DEBUG
+#define XXX_INTR_DEBUG
 //#define XXX_RXINTR_DEBUG
 //#define XXX_TXDESC_DEBUG
 //#define XXX_RXDESC_DEBUG
@@ -144,6 +144,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/device.h>
 #include <sys/errno.h>
 #include <sys/intr.h>
+#include <sys/interrupt.h>
 #include <sys/ioctl.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
@@ -175,15 +176,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #undef CONFIG_L3_FILTER_SUPPORT			/* netbsd doesn't have L3 filter framework */
 #define CONFIG_RSS_ENABLE		0	/* XXX: doesn't work yet */
 
-#define AQ_MAX_NINTR			8
-#define AQ_TXRING_NUM			8
-#define AQ_RXRING_NUM			8
-CTASSERT(AQ_RXRING_NUM == AQ_TXRING_NUM);	//XXX
+#define AQ_NINTR_MAX			(8 + 1)	/* TXRXrings + link */
+#define AQ_NQUEUE_MAX			8
 #define AQ_TXD_NUM			2048	/* per ring. must be 8*n */
 #define AQ_RXD_NUM			2048	/* per ring. must be 8*n */
-
-#define LINKSTAT_IRQ			31	/* shared with ring[31] */
-
 
 /* hardware specification */
 #define AQ_RINGS_NUM			32
@@ -278,7 +274,7 @@ CTASSERT(AQ_RXRING_NUM == AQ_TXRING_NUM);	//XXX
 #define  AQ_INTR_CTRL_IRQMODE_LEGACY		0
 #define  AQ_INTR_CTRL_IRQMODE_MSI		1
 #define  AQ_INTR_CTRL_IRQMODE_MSIX		2
-#define  AQ_INTR_CTRL_MULTIVEC			__BIT(2)	//?
+#define  AQ_INTR_CTRL_MULTIVEC			__BIT(2)
 #define  AQ_INTR_CTRL_AUTO_MASK			__BIT(5)
 #define  AQ_INTR_CTRL_CLR_ON_READ		__BIT(7)
 #define  AQ_INTR_CTRL_RESET_DIS			__BIT(29)
@@ -462,8 +458,8 @@ CTASSERT(AQ_RXRING_NUM == AQ_TXRING_NUM);	//XXX
 #define  RX_DMA_DESC_BUFSIZE_HDR		__BITS(12,8)
 
 /* RX_DMA_DCAD_REG[AQ_RINGS_NUM] 0x6100-0x6180 */
-#define RX_DMA_DCAD_REG(i)				(0x6100 + (i) * 4)
-#define  RX_DMA_DCAD_CPUID				__BITS(7,0)
+#define RX_DMA_DCAD_REG(i)			(0x6100 + (i) * 4)
+#define  RX_DMA_DCAD_CPUID			__BITS(7,0)
 #define  RX_DMA_DCAD_PAYLOAD_EN			__BIT(29)
 #define  RX_DMA_DCAD_HEADER_EN			__BIT(30)
 #define  RX_DMA_DCAD_DESC_EN			__BIT(31)
@@ -878,8 +874,8 @@ typedef struct aq_tx_desc {
 
 struct aq_txring {
 	struct aq_softc *ring_sc;
-	kmutex_t ring_mutex;
 	int ring_index;
+	kmutex_t ring_mutex;
 
 	aq_tx_desc_t *ring_txdesc;	/* aq_tx_desc_t[AQ_TXD_NUM] */
 	bus_dmamap_t ring_txdesc_dmamap;
@@ -897,8 +893,8 @@ struct aq_txring {
 
 struct aq_rxring {
 	struct aq_softc *ring_sc;
-	kmutex_t ring_mutex;
 	int ring_index;
+	kmutex_t ring_mutex;
 
 	aq_rx_desc_t *ring_rxdesc;	/* aq_rx_desc_t[AQ_RXD_NUM] */
 	bus_dmamap_t ring_rxdesc_dmamap;
@@ -909,6 +905,12 @@ struct aq_rxring {
 		bus_dmamap_t dmamap;
 	} ring_mbufs[AQ_RXD_NUM];
 	unsigned int ring_readidx;
+};
+
+struct aq_queue {
+	struct aq_softc *sc;
+	struct aq_txring txring;
+	struct aq_rxring rxring;
 };
 
 struct aq_softc;
@@ -929,15 +931,19 @@ struct aq_softc {
 	bus_size_t sc_iosize;
 	bus_dma_tag_t sc_dmat;;
 
-	void *sc_ihs[AQ_MAX_NINTR];
+	void *sc_ihs[AQ_NINTR_MAX];
 	pci_intr_handle_t *sc_intrs;
-	int sc_nintrs;
 
-	struct aq_txring sc_txring[AQ_TXRING_NUM];
-	struct aq_rxring sc_rxring[AQ_RXRING_NUM];
-	int sc_txringnum;
-	int sc_rxringnum;
-	int sc_ringnum;	/* = MAX(sc_txringnum, sc_rxringnum) */
+	int sc_tx_irq[AQ_NQUEUE_MAX];
+	int sc_rx_irq[AQ_NQUEUE_MAX];
+	int sc_linkstat_irq;
+
+	int sc_nintrs;
+	int sc_affinity_offset;
+	bool sc_msix;
+
+	struct aq_queue sc_queue[AQ_NQUEUE_MAX];
+	int sc_nqueues;
 
 	pci_chipset_tag_t sc_pc;
 	pcitag_t sc_pcitag;
@@ -1043,13 +1049,17 @@ static void aq_enable_intr(struct aq_softc *, bool, bool);
 #ifdef USE_CALLOUT_TICK
 static void aq_tick(void *);
 #endif
-static int aq_intr(void *);
-#ifdef  XXX_INTR_DEBUG
-static int aq_tx_intr_poll(struct aq_txring *);
-static int aq_rx_intr_poll(struct aq_rxring *);
+static int aq_legacy_intr(void *);
+#ifdef USE_MSIX
+static int aq_link_intr(void *);
+static int aq_txrx_intr(void *);
 #endif
 static int aq_tx_intr(struct aq_txring *);
 static int aq_rx_intr(struct aq_rxring *);
+#ifdef XXX_INTR_DEBUG
+static int aq_tx_intr_poll(struct aq_txring *);
+static int aq_rx_intr_poll(struct aq_rxring *);
+#endif
 
 static int aq_set_linkmode(struct aq_softc *, aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
 static int aq_get_linkmode(struct aq_softc *, aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
@@ -1190,7 +1200,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	pcitag_t tag;
 	pcireg_t memtype, bar;
 	const struct aq_product *aqp;
-	pci_intr_type_t max_type = PCI_INTR_TYPE_MSIX;
+	pci_intr_type_t max_type;
 	int counts[PCI_INTR_TYPE_SIZE];
 	int error;
 
@@ -1228,50 +1238,65 @@ aq_attach(device_t parent, device_t self, void *aux)
 		return;
 	}
 
-	memset(counts, 0, sizeof(counts));
+	sc->sc_msix = false;	/* set true when aq_setup_msix() is succeeded */
 #ifdef USE_MSIX
+	sc->sc_nqueues = MIN(ncpu, AQ_NQUEUE_MAX);
+	sc->sc_nqueues = MIN(sc->sc_nqueues, pci_msix_count(pa->pa_pc, pa->pa_tag));
+
+	aprint_debug_dev(sc->sc_dev, "AQ_NQUEUE_MAX=%d, ncpu=%d, pci_msix_count=%d -> nqueues=%d\n",
+	    AQ_NQUEUE_MAX, ncpu, pci_msix_count(pa->pa_pc, pa->pa_tag),
+	    sc->sc_nqueues);
+
+	max_type = PCI_INTR_TYPE_MSIX;
 	counts[PCI_INTR_TYPE_INTX] = 1;
 	counts[PCI_INTR_TYPE_MSI]  = 1;
-	counts[PCI_INTR_TYPE_MSIX] = AQ_MAX_NINTR;
- alloc_retry:
+	counts[PCI_INTR_TYPE_MSIX] = sc->sc_nqueues + 1;
+ intralloc_retry:
 	if (pci_intr_alloc(pa, &sc->sc_intrs, counts, max_type) != 0) {
 		aprint_error_dev(sc->sc_dev, "failed to allocate interrupt\n");
 		return;
 	}
 	if (pci_intr_type(pc, sc->sc_intrs[0]) == PCI_INTR_TYPE_MSIX) {
 		error = aq_setup_msix(sc);
-		if (error) {
+		if (error != 0) {
 			pci_intr_release(pc, sc->sc_intrs,
 			    counts[PCI_INTR_TYPE_MSIX]);
 
 			/* Setup for MSI: Disable MSI-X */
 			max_type = PCI_INTR_TYPE_MSI;
-			counts[PCI_INTR_TYPE_MSI] = 1;
 			counts[PCI_INTR_TYPE_INTX] = 1;
-			goto alloc_retry;
+			counts[PCI_INTR_TYPE_MSI]  = 1;
+			counts[PCI_INTR_TYPE_MSIX] = 0;
+			goto intralloc_retry;
 		}
+		sc->sc_msix = true;
 	} else if (pci_intr_type(pc, sc->sc_intrs[0]) == PCI_INTR_TYPE_MSI) {
-		aq_adjust_qnum(sc, 0);	/* Must not use multiqueue */
+		sc->sc_nqueues = 1;	/* Must not use multiqueue */
 		error = aq_setup_legacy(sc);
-		if (error) {
+		if (error != 0) {
 			pci_intr_release(sc->sc_pc, sc->sc_intrs,
 			    counts[PCI_INTR_TYPE_MSI]);
 
 			/* The next try is for INTx: Disable MSI */
 			max_type = PCI_INTR_TYPE_INTX;
 			counts[PCI_INTR_TYPE_INTX] = 1;
-			goto alloc_retry;
+			counts[PCI_INTR_TYPE_MSI]  = 0;
+			counts[PCI_INTR_TYPE_MSIX] = 0;
+			goto intralloc_retry;
 		}
 	} else {
-		aq_adjust_qnum(sc, 0);	/* Must not use multiqueue */
+		sc->sc_nqueues = 1;	/* Must not use multiqueue */
 		error = aq_setup_legacy(sc);
-		if (error) {
+		if (error != 0) {
 			pci_intr_release(sc->sc_pc, sc->sc_intrs,
 			    counts[PCI_INTR_TYPE_INTX]);
 			return;
 		}
 	}
 #else
+	sc->sc_nqueues = 1;
+
+	max_type = PCI_INTR_TYPE_INTX;
 	counts[PCI_INTR_TYPE_INTX] = 1;
 	counts[PCI_INTR_TYPE_MSI]  = 0;
 	counts[PCI_INTR_TYPE_MSIX] = 0;
@@ -1290,9 +1315,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_SUPPORT;
 #endif
 
-	sc->sc_txringnum = AQ_TXRING_NUM;
-	sc->sc_rxringnum = AQ_RXRING_NUM;
-	sc->sc_ringnum = MAX(sc->sc_txringnum, sc->sc_rxringnum);
 	error = aq_txrx_rings_alloc(sc);
 	if (error != 0)
 		goto attach_failure;
@@ -1451,7 +1473,7 @@ aq_setup_legacy(struct aq_softc *sc)
 	char intrbuf[PCI_INTRSTR_LEN];
 
 	intrstr = pci_intr_string(pc, sc->sc_intrs[0], intrbuf, sizeof(intrbuf));
-	sc->sc_ihs[0] = pci_intr_establish_xname(pc, sc->sc_intrs[0], IPL_NET, aq_intr,
+	sc->sc_ihs[0] = pci_intr_establish_xname(pc, sc->sc_intrs[0], IPL_NET, aq_legacy_intr,
 	    sc, device_xname(sc->sc_dev));
 	if (sc->sc_ihs[0] == NULL) {
 		aprint_error_dev(sc->sc_dev, "unable to establish %s",
@@ -1462,6 +1484,11 @@ aq_setup_legacy(struct aq_softc *sc)
 	aprint_normal_dev(sc->sc_dev, "interrupting at %s\n", intrstr);
 	sc->sc_nintrs = 1;
 
+	/* map IRQ statically */
+	sc->sc_tx_irq[0] = 0;
+	sc->sc_rx_irq[0] = 16;
+	sc->sc_linkstat_irq = 31;
+
 	return 0;
 }
 
@@ -1469,7 +1496,126 @@ aq_setup_legacy(struct aq_softc *sc)
 static int
 aq_setup_msix(struct aq_softc *sc)
 {
-	return ENOTSUP;
+	void *vih;
+	kcpuset_t *affinity;
+	int error, i, txrx_established;
+	pci_chipset_tag_t pc = sc->sc_pc;
+	const char *intrstr = NULL;
+	char intrbuf[PCI_INTRSTR_LEN];
+	char intr_xname[INTRDEVNAMEBUF];
+
+	if (sc->sc_nqueues < ncpu) {
+		/*
+		 * To avoid other devices' interrupts, the affinity of Tx/Rx
+		 * interrupts start from CPU#1.
+		 */
+		sc->sc_affinity_offset = 1;
+	} else {
+		/*
+		 * In this case, this device use all CPUs. So, we unify
+		 * affinitied cpu_index to msix vector number for readability.
+		 */
+		sc->sc_affinity_offset = 0;
+	}
+
+	kcpuset_create(&affinity, false);
+
+	/*
+	 * TX/RX interrupts
+	 */
+	txrx_established = 0;
+	for (i = 0; i < sc->sc_nqueues; i++) {
+		struct aq_queue *aqq = &sc->sc_queue[i];
+		int affinity_to = (sc->sc_affinity_offset + i) % ncpu;
+
+		intrstr = pci_intr_string(pc, sc->sc_intrs[i], intrbuf,
+		    sizeof(intrbuf));
+#ifdef WM_MPSAFE
+		pci_intr_setattr(pc, &sc->sc_intrs[i],
+		    PCI_INTR_MPSAFE, true);
+#endif
+		memset(intr_xname, 0, sizeof(intr_xname));
+		snprintf(intr_xname, sizeof(intr_xname), "%s TXRX%d",
+		    device_xname(sc->sc_dev), i);
+		vih = pci_intr_establish_xname(pc, sc->sc_intrs[i],
+		    IPL_NET, aq_txrx_intr, aqq, intr_xname);
+		if (vih == NULL) {
+			aprint_error_dev(sc->sc_dev,
+			    "unable to establish MSI-X(for TX and RX)%s%s\n",
+			    intrstr ? " at " : "",
+			    intrstr ? intrstr : "");
+
+			goto fail;
+		}
+		kcpuset_zero(affinity);
+		/* Round-robin affinity */
+		kcpuset_set(affinity, affinity_to);
+		error = interrupt_distribute(vih, affinity, NULL);
+		if (error == 0) {
+			aprint_normal_dev(sc->sc_dev,
+			    "for TX and RX interrupting at %s affinity to %u\n",
+			    intrstr, affinity_to);
+		} else {
+			aprint_normal_dev(sc->sc_dev,
+			    "for TX and RX interrupting at %s\n", intrstr);
+		}
+		sc->sc_ihs[i] = vih;
+		txrx_established++;
+	}
+
+	/* linkstatus interrupt */
+	intrstr = pci_intr_string(pc, sc->sc_intrs[sc->sc_nqueues], intrbuf,
+	    sizeof(intrbuf));
+#ifdef WM_MPSAFE
+	pci_intr_setattr(pc, &sc->sc_intrs[sc->sc_nqueues], PCI_INTR_MPSAFE, true);
+#endif
+	memset(intr_xname, 0, sizeof(intr_xname));
+	snprintf(intr_xname, sizeof(intr_xname), "%s LINK",
+	    device_xname(sc->sc_dev));
+	vih = pci_intr_establish_xname(pc, sc->sc_intrs[sc->sc_nqueues],
+	    IPL_NET, aq_link_intr, sc, intr_xname);
+	if (vih == NULL) {
+		aprint_error_dev(sc->sc_dev,
+		    "unable to establish MSI-X(for LINK)%s%s\n",
+		    intrstr ? " at " : "",
+		    intrstr ? intrstr : "");
+
+		goto fail;
+	}
+	/* Keep default affinity to LINK interrupt */
+	aprint_normal_dev(sc->sc_dev,
+	    "for LINK interrupting at %s\n", intrstr);
+	sc->sc_ihs[sc->sc_nqueues] = vih;
+	sc->sc_nintrs = sc->sc_nqueues + 1;
+
+	//XXX: temp
+	kcpuset_zero(affinity);
+	kcpuset_set(affinity, ncpu - 1);
+	error = interrupt_distribute(vih, affinity, NULL);
+	printf("XXXXXXXXXXX: affinity linkstat intr: error=%d\n", error);
+
+
+	kcpuset_destroy(affinity);
+
+	/* RING to IRQ mapping */
+	for (i = 0; i < sc->sc_nqueues; i++) {
+		sc->sc_tx_irq[i] = i;
+		sc->sc_rx_irq[i] = i;
+	}
+	sc->sc_linkstat_irq = sc->sc_nqueues;
+
+	return 0;
+
+ fail:
+	for (i = 0; i < sc->sc_nqueues; i++) {
+		if (sc->sc_ihs[i] != NULL) {
+			pci_intr_disestablish(sc->sc_pc, sc->sc_ihs[i]);
+			sc->sc_ihs[i] = NULL;
+		}
+	}
+
+	kcpuset_destroy(affinity);
+	return ENOMEM;
 }
 #endif
 
@@ -2607,13 +2753,13 @@ aq_hw_interrupt_moderation_set(struct aq_softc *sc)
 		AQ_WRITE_REG_BIT(sc, RX_DMA_INT_DESC_WRWB_EN_REG, RX_DMA_INT_DESC_WRWB_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_INT_DESC_WRWB_EN_REG, RX_DMA_INT_DESC_MODERATE_EN, 1);
 
-		for (i = 0; i < sc->sc_txringnum; i++) {
+		for (i = 0; i < AQ_NQUEUE_MAX; i++) {
 			AQ_WRITE_REG(sc, TX_INTR_MODERATION_CTL_REG(i),
 			    __SHIFTIN(tx_min, TX_INTR_MODERATION_CTL_MIN) |
 			    __SHIFTIN(tx_max, TX_INTR_MODERATION_CTL_MAX) |
 			    TX_INTR_MODERATION_CTL_EN);
 		}
-		for (i = 0; i < sc->sc_rxringnum; i++) {
+		for (i = 0; i < AQ_NQUEUE_MAX; i++) {
 			AQ_WRITE_REG(sc, RX_INTR_MODERATION_CTL_REG(i),
 			    __SHIFTIN(rx_min, RX_INTR_MODERATION_CTL_MIN) |
 			    __SHIFTIN(rx_max, RX_INTR_MODERATION_CTL_MAX) |
@@ -2626,10 +2772,10 @@ aq_hw_interrupt_moderation_set(struct aq_softc *sc)
 		AQ_WRITE_REG_BIT(sc, RX_DMA_INT_DESC_WRWB_EN_REG, RX_DMA_INT_DESC_WRWB_EN, 1);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_INT_DESC_WRWB_EN_REG, RX_DMA_INT_DESC_MODERATE_EN, 0);
 
-		for (i = 0; i < sc->sc_txringnum; i++) {
+		for (i = 0; i < AQ_NQUEUE_MAX; i++) {
 			AQ_WRITE_REG(sc, TX_INTR_MODERATION_CTL_REG(i), 0);
 		}
-		for (i = 0; i < sc->sc_rxringnum; i++) {
+		for (i = 0; i < AQ_NQUEUE_MAX; i++) {
 			AQ_WRITE_REG(sc, RX_INTR_MODERATION_CTL_REG(i), 0);
 		}
 	}
@@ -2694,7 +2840,7 @@ aq_init_rsstable(struct aq_softc *sc)
 
 
 	for (i = 0; i < AQ_RSS_INDIRECTION_TABLE_MAX; i++) {
-		sc->sc_rss_table[i] = i % sc->sc_rxringnum;
+		sc->sc_rss_table[i] = i % sc->sc_nqueues;
 	}
 
 #ifdef XXX_DUMP_RSS_KEY
@@ -2874,16 +3020,20 @@ aq_hw_init(struct aq_softc *sc)
 	aq_hw_qos_set(sc);
 
 	/* Enable interrupt */
-//	int irqmode =  AQ_INTR_CTRL_IRQMODE_LEGACY;	// spurious interrupt occurs??? (intr-status=0)
-	int irqmode =  AQ_INTR_CTRL_IRQMODE_MSI;
-//	int irqmode =  AQ_INTR_CTRL_IRQMODE_MSIX;
+	int irqmode;
+	if (sc->sc_msix)
+		irqmode =  AQ_INTR_CTRL_IRQMODE_MSIX;
+	else
+		irqmode =  AQ_INTR_CTRL_IRQMODE_MSI;
 
 #if 0
 	AQ_WRITE_REG(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_RESET_DIS);
 //	AQ_WRITE_REG(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_RESET_DIS | AQ_INTR_CTRL_CLR_ON_READ);
 	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_IRQMODE, irqmode);
 #else
-	AQ_WRITE_REG(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_RESET_DIS | __SHIFTIN(irqmode, AQ_INTR_CTRL_IRQMODE));
+	AQ_WRITE_REG(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_RESET_DIS);
+	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_MULTIVEC, sc->sc_msix ? 1 : 0);
+	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_IRQMODE, irqmode);
 #endif
 
 	AQ_WRITE_REG(sc, AQ_INTR_AUTOMASK_REG, 0xffffffff);
@@ -2894,7 +3044,7 @@ aq_hw_init(struct aq_softc *sc)
 	);
 
 	/* link interrupt */
-	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_REG(3), __BIT(7) | LINKSTAT_IRQ);
+	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_REG(3), __BIT(7) | sc->sc_linkstat_irq);
 
 	return 0;
 }
@@ -3276,20 +3426,19 @@ aq_txrx_rings_alloc(struct aq_softc *sc)
 {
 	int n, error;
 
-	for (n = 0; n < sc->sc_txringnum; n++) {
-		sc->sc_txring[n].ring_sc = sc;
-		sc->sc_txring[n].ring_index = n;
-		mutex_init(&sc->sc_txring[n].ring_mutex, MUTEX_DEFAULT, IPL_NET);
-		error = aq_txring_alloc(sc, &sc->sc_txring[n]);
+	for (n = 0; n < sc->sc_nqueues; n++) {
+		sc->sc_queue[n].sc = sc;
+		sc->sc_queue[n].txring.ring_sc = sc;
+		sc->sc_queue[n].txring.ring_index = n;
+		mutex_init(&sc->sc_queue[n].txring.ring_mutex, MUTEX_DEFAULT, IPL_NET);
+		error = aq_txring_alloc(sc, &sc->sc_queue[n].txring);
 		if (error != 0)
 			goto failure;
-	}
 
-	for (n = 0; n < sc->sc_rxringnum; n++) {
-		sc->sc_rxring[n].ring_sc = sc;
-		sc->sc_rxring[n].ring_index = n;
-		mutex_init(&sc->sc_rxring[n].ring_mutex, MUTEX_DEFAULT, IPL_NET);
-		error = aq_rxring_alloc(sc, &sc->sc_rxring[n]);
+		sc->sc_queue[n].rxring.ring_sc = sc;
+		sc->sc_queue[n].rxring.ring_index = n;
+		mutex_init(&sc->sc_queue[n].rxring.ring_mutex, MUTEX_DEFAULT, IPL_NET);
+		error = aq_rxring_alloc(sc, &sc->sc_queue[n].rxring);
 		if (error != 0)
 			break;
 	}
@@ -3305,7 +3454,7 @@ dump_txrings(struct aq_softc *sc)
 	struct aq_txring *txring;
 	int n, i;
 
-	for (n = 0; n < sc->sc_txringnum; n++) {
+	for (n = 0; n < sc->sc_nqueues; n++) {
 		txring = &sc->sc_txring[n];
 		mutex_enter(&txring->ring_mutex);
 
@@ -3337,7 +3486,7 @@ dump_rxrings(struct aq_softc *sc)
 	struct aq_rxring *rxring;
 	int n, i;
 
-	for (n = 0; n < sc->sc_rxringnum; n++) {
+	for (n = 0; n < sc->sc_nqueues; n++) {
 		rxring = &sc->sc_rxring[n];
 		mutex_enter(&rxring->ring_mutex);
 
@@ -3360,14 +3509,12 @@ aq_txrx_rings_free(struct aq_softc *sc)
 {
 	int n;
 
-	for (n = 0; n < sc->sc_txringnum; n++) {
-		aq_txring_free(sc, &sc->sc_txring[n]);
-		mutex_destroy(&sc->sc_txring[n].ring_mutex);
-	}
+	for (n = 0; n < sc->sc_nqueues; n++) {
+		aq_txring_free(sc, &sc->sc_queue[n].txring);
+		mutex_destroy(&sc->sc_queue[n].txring.ring_mutex);
 
-	for (n = 0; n < sc->sc_rxringnum; n++) {
-		aq_rxring_free(sc, &sc->sc_rxring[n]);
-		mutex_destroy(&sc->sc_rxring[n].ring_mutex);
+		aq_rxring_free(sc, &sc->sc_queue[n].rxring);
+		mutex_destroy(&sc->sc_queue[n].rxring.ring_mutex);
 	}
 }
 
@@ -3388,83 +3535,185 @@ static void
 aq_enable_intr(struct aq_softc *sc, bool link, bool txrx)
 {
 	uint32_t imask = 0;
+	int i;
 
-	if (txrx)
-		imask |= __BITS(0, sc->sc_ringnum - 1);
+	if (txrx) {
+		for (i = 0; i < sc->sc_nqueues; i++) {
+			imask |= __BIT(sc->sc_tx_irq[i]);
+			imask |= __BIT(sc->sc_rx_irq[i]);
+		}
+	}
+
 	if (link)
-		imask |= __BIT(LINKSTAT_IRQ);
+		imask |= __BIT(sc->sc_linkstat_irq);
 
 	AQ_WRITE_REG(sc, AQ_INTR_MASK_REG, imask);
-	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, 0xffffffff);	//XXX
+	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, 0xffffffff);
 
 	printf("%s:%d: INTR_MASK/INTR_STATUS=%08x/%08x\n", __func__, __LINE__, AQ_READ_REG(sc, AQ_INTR_MASK_REG), AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
 }
 
 static int
-aq_intr(void *arg)
+aq_legacy_intr(void *arg)
 {
-	struct aq_softc *sc __unused = arg;
+	struct aq_softc *sc = arg;
 	uint32_t status;
 	int nintr = 0;
-	int i, n;
-#ifdef XXX_INTR_DEBUG
-	int rxcount[32];
-	int txcount[32];
-#endif
-
 
 	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
 #ifdef XXX_INTR_DEBUG
-	memset(rxcount, 0, sizeof(rxcount));
-	memset(txcount, 0, sizeof(txcount));
 	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()), AQ_READ_REG(sc, AQ_INTR_MASK_REG), status, AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
+	(void)aq_tx_intr_poll;
+	(void)aq_rx_intr_poll;
 #endif
+	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, 0xffffffff);
 
-	if (status & __BIT(LINKSTAT_IRQ)) {
+	if (status & __BIT(sc->sc_linkstat_irq))
 		nintr += aq_update_link_status(sc);
+
+	if (status & __BIT(sc->sc_rx_irq[0])) {
+		mutex_enter(&sc->sc_queue[0].rxring.ring_mutex);
+		nintr += aq_rx_intr(&sc->sc_queue[0].rxring);
+		mutex_exit(&sc->sc_queue[0].rxring.ring_mutex);
 	}
 
-	for (i = 0; i < sc->sc_rxringnum; i++) {
-		if (status & __BIT(i)) {
-			mutex_enter(&sc->sc_rxring[i].ring_mutex);
-			n = aq_rx_intr(&sc->sc_rxring[i]);
-			mutex_exit(&sc->sc_rxring[i].ring_mutex);
-			if (n != 0)
-				nintr++;
-#ifdef XXX_INTR_DEBUG
-			rxcount[i] = n;
-#endif
-		}
-	}
-	for (i = 0; i < sc->sc_txringnum; i++) {
-		if (status & __BIT(i)) {
-			mutex_enter(&sc->sc_txring[i].ring_mutex);
-			n = aq_tx_intr(&sc->sc_txring[i]);
-			mutex_exit(&sc->sc_txring[i].ring_mutex);
-			if (n != 0)
-				nintr++;
-#ifdef XXX_INTR_DEBUG
-			txcount[i] = n;
-#endif
-		}
+	if (status & __BIT(sc->sc_tx_irq[0])) {
+		mutex_enter(&sc->sc_queue[0].txring.ring_mutex);
+		nintr += aq_tx_intr(&sc->sc_queue[0].txring);
+		mutex_exit(&sc->sc_queue[0].txring.ring_mutex);
 	}
 
-#ifdef XXX_INTR_DEBUG
-	printf("RX:");
-	for (i = 0; i < sc->sc_rxringnum; i++) {
-		printf("%d%s", rxcount[i], aq_rx_intr_poll(&sc->sc_rxring[i]) ? "!" : " ");
-	}
-
-	printf(" / TX:");
-	for (i = 0; i < sc->sc_txringnum; i++) {
-		printf("%d%s", txcount[i], aq_tx_intr_poll(&sc->sc_txring[i]) ? "!" : " ");
-	}
-	printf("\n");
-#endif
-
-	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, 0xffffffff);	//XXX
 	return nintr;
 }
+
+//static int
+//aq_legacy_intr(void *arg)
+//{
+//	struct aq_softc *sc = arg;
+//	uint32_t status;
+//	int nintr = 0;
+//	int i, n;
+//#ifdef XXX_INTR_DEBUG
+//	int rxcount[AQ_NQUEUE_MAX];
+//	int txcount[AQ_NQUEUE_MAX];
+//#endif
+//
+//	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
+//#ifdef XXX_INTR_DEBUG
+//	memset(rxcount, 0, sizeof(rxcount));
+//	memset(txcount, 0, sizeof(txcount));
+//	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()), AQ_READ_REG(sc, AQ_INTR_MASK_REG), status, AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
+//#endif
+//
+//	if (status & __BIT(AQ_LINKSTAT_IRQ)) {
+//		nintr += aq_update_link_status(sc);
+//	}
+//
+//	for (i = 0; i < sc->sc_nqueues; i++) {
+//		if (status & __BIT(sc->sc_rx_irq[i])) {
+//			mutex_enter(&sc->sc_queue[i].rxring.ring_mutex);
+//			n = aq_rx_intr(&sc->sc_queue[i].rxring);
+//			mutex_exit(&sc->sc_queue[i].rxring.ring_mutex);
+//			if (n != 0)
+//				nintr++;
+//#ifdef XXX_INTR_DEBUG
+//			rxcount[i] = n;
+//#endif
+//		}
+//	}
+//	for (i = 0; i < sc->sc_nqueues; i++) {
+//		if (status & __BIT(sc->sc_tx_irq[i])) {
+//			mutex_enter(&sc->sc_queue[i].txring.ring_mutex);
+//			n = aq_tx_intr(&sc->sc_queue[i].txring);
+//			mutex_exit(&sc->sc_queue[i].txring.ring_mutex);
+//			if (n != 0)
+//				nintr++;
+//#ifdef XXX_INTR_DEBUG
+//			txcount[i] = n;
+//#endif
+//		}
+//	}
+//
+//#ifdef XXX_INTR_DEBUG
+//	printf("RX:");
+//	for (i = 0; i < sc->sc_nqueues; i++) {
+//		printf("%d%s", rxcount[i], aq_rx_intr_poll(&sc->sc_queue[i].rxring) ? "!" : " ");
+//	}
+//
+//	printf(" / TX:");
+//	for (i = 0; i < sc->sc_nqueues; i++) {
+//		printf("%d%s", txcount[i], aq_tx_intr_poll(&sc->sc_queue[i].txring) ? "!" : " ");
+//	}
+//	printf("\n");
+//#endif
+//
+//	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, 0xffffffff);	//XXX
+//	return nintr;
+//}
+
+
+
+#ifdef USE_MSIX
+static int
+aq_txrx_intr(void *arg)
+{
+	struct aq_queue *queue = arg;
+	struct aq_softc *sc = queue->sc;
+	struct aq_txring *txring = &queue->txring;
+	struct aq_rxring *rxring = &queue->rxring;
+	uint32_t status;
+	int nintr = 0;
+	int txringidx, rxringidx;
+
+	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
+
+	txringidx = txring->ring_index;
+	rxringidx = rxring->ring_index;
+
+	//XXX
+	if (txringidx != rxringidx) {
+		printf("XXXXXXXXXX: must be (txringidx %d == rxringidx %d)!\n", txringidx, rxringidx);
+	}
+
+#ifdef XXX_INTR_DEBUG
+	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x (tx,rx index=%d,%d)\n", __func__, cpu_index(curcpu()),
+	    AQ_READ_REG(sc, AQ_INTR_MASK_REG), status, AQ_READ_REG(sc, AQ_INTR_STATUS_REG),
+	    txringidx, rxringidx);
+#endif
+
+	mutex_enter(&rxring->ring_mutex);
+	nintr += aq_rx_intr(rxring);
+	mutex_exit(&rxring->ring_mutex);
+
+	mutex_enter(&txring->ring_mutex);
+	nintr += aq_tx_intr(txring);
+	mutex_exit(&txring->ring_mutex);
+
+	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, __BIT(txringidx));
+	return nintr;
+}
+
+static int
+aq_link_intr(void *arg)
+{
+	struct aq_softc *sc = arg;
+	uint32_t status;
+	int nintr = 0;
+
+	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
+#ifdef XXX_INTR_DEBUG
+	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()),
+	    AQ_READ_REG(sc, AQ_INTR_MASK_REG), status, AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
+#endif
+
+	if (status & __BIT(sc->sc_linkstat_irq)) {
+		nintr = aq_update_link_status(sc);
+		AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, __BIT(sc->sc_linkstat_irq));
+	}
+
+	return nintr;
+}
+#endif
 
 static void
 aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
@@ -3501,8 +3750,8 @@ aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 		AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(ringidx), 0);
 		AQ_WRITE_REG(sc, TX_DMA_DESC_WRWB_THRESH_REG(ringidx), 0);
 
-		/* irq map */
-		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_TX_REG(ringidx), AQ_INTR_IRQ_MAP_TX_IRQMAP(ringidx), ringidx /*=msix*/);
+		/* Mapping interrupt vector */
+		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_TX_REG(ringidx), AQ_INTR_IRQ_MAP_TX_IRQMAP(ringidx), sc->sc_tx_irq[ringidx]);
 		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_TX_REG(ringidx), AQ_INTR_IRQ_MAP_TX_EN(ringidx), true);
 
 		/* enable DMA */
@@ -3569,7 +3818,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 		/* Rx ring set mode */
 
 		/* Mapping interrupt vector */
-		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_RX_REG(ringidx), AQ_INTR_IRQ_MAP_RX_IRQMAP(ringidx), ringidx /*=msix*/);
+		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_RX_REG(ringidx), AQ_INTR_IRQ_MAP_RX_IRQMAP(ringidx), sc->sc_rx_irq[ringidx]);
 		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_RX_REG(ringidx), AQ_INTR_IRQ_MAP_RX_EN(ringidx), 1);
 
 		const int cpuid = 0;	//XXX
@@ -3699,7 +3948,6 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	return 0;
 }
 
-#ifdef XXX_INTR_DEBUG
 static int
 aq_tx_intr_poll(struct aq_txring *txring)
 {
@@ -3709,7 +3957,6 @@ aq_tx_intr_poll(struct aq_txring *txring)
 		return 0;
 	return 1;
 }
-#endif
 
 static int
 aq_tx_intr(struct aq_txring *txring)
@@ -3799,7 +4046,6 @@ aq_tx_intr(struct aq_txring *txring)
 	return n;
 }
 
-#ifdef  XXX_INTR_DEBUG
 static int
 aq_rx_intr_poll(struct aq_rxring *rxring)
 {
@@ -3807,10 +4053,8 @@ aq_rx_intr_poll(struct aq_rxring *rxring)
 
 	if (rxring->ring_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(rxring->ring_index), RX_DMA_DESC_HEAD_PTR))
 		return 0;
-
 	return 1;
 }
-#endif
 
 static int
 aq_rx_intr(struct aq_rxring *rxring)
@@ -4102,7 +4346,7 @@ aq_ifflags_cb(struct ethercom *ec)
 
 	ecchange = ec->ec_capenable ^ sc->sc_ec_capenable;
 	if (ecchange & ETHERCAP_VLAN_HWTAGGING) {
-		for (i = 0; i < AQ_RXRING_NUM; i++) {
+		for (i = 0; i < AQ_NQUEUE_MAX; i++) {
 			AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_REG(i), RX_DMA_DESC_VLAN_STRIP,
 			    (ec->ec_capenable & ETHERCAP_VLAN_HWTAGGING) ? 1 : 0);
 		}
@@ -4126,14 +4370,14 @@ aq_init(struct ifnet *ifp)
 	aq_set_capability(sc);
 
 	/* start TX */
-	for (i = 0; i < sc->sc_txringnum; i++) {
-		aq_txring_reset(sc, &sc->sc_txring[i], true);
+	for (i = 0; i < sc->sc_nqueues; i++) {
+		aq_txring_reset(sc, &sc->sc_queue[i].txring, true);
 	}
 	AQ_WRITE_REG_BIT(sc, TPB_TX_BUF_REG, TPB_TX_BUF_EN, 1);
 
 	/* start RX */
-	for (i = 0; i < sc->sc_rxringnum; i++) {
-		error = aq_rxring_reset(sc, &sc->sc_rxring[i], true);
+	for (i = 0; i < sc->sc_nqueues; i++) {
+		error = aq_rxring_reset(sc, &sc->sc_queue[i].rxring, true);
 		if (error != 0)
 			goto aq_init_failure;
 	}
@@ -4183,7 +4427,7 @@ aq_start(struct ifnet *ifp)
 
 	sc = ifp->if_softc;
 
-	txring = &sc->sc_txring[0];	// XXX: select TX ring
+	txring = &sc->sc_queue[0].txring;	// XXX: select TX ring[0]
 
 #if 0
 	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u, INTR_MASK/INTR_STATUS=%08x/%08x\n",
@@ -4246,12 +4490,12 @@ aq_stop(struct ifnet *ifp, int disable)
 	aq_enable_intr(sc, true, false);
 
 	AQ_WRITE_REG_BIT(sc, TPB_TX_BUF_REG, TPB_TX_BUF_EN, 0);
-	for (i = 0; i < sc->sc_txringnum; i++)
-		aq_txring_reset(sc, &sc->sc_txring[i], false);
+	for (i = 0; i < sc->sc_nqueues; i++)
+		aq_txring_reset(sc, &sc->sc_queue[i].txring, false);
 
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_REG, RPB_RPF_RX_BUF_EN, 0);
-	for (i = 0; i < sc->sc_rxringnum; i++)
-		aq_rxring_reset(sc, &sc->sc_rxring[i], false);
+	for (i = 0; i < sc->sc_nqueues; i++)
+		aq_rxring_reset(sc, &sc->sc_queue[i].rxring, false);
 
 	/* invalidate RX descriptor cache */
 	AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_CACHE_INIT_REG, RX_DMA_DESC_CACHE_INIT,
@@ -4283,8 +4527,8 @@ aq_watchdog(struct ifnet *ifp)
 	//XXX
 	printf("####!!!! %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()), AQ_READ_REG(sc, AQ_INTR_MASK_REG), status, AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
 
-	for (n = 0; n < sc->sc_txringnum; n++) {
-		txring = &sc->sc_txring[n];
+	for (n = 0; n < sc->sc_nqueues; n++) {
+		txring = &sc->sc_queue[n].txring;
 
 #if 1
 		//DEBUG
