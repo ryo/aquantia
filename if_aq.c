@@ -41,20 +41,20 @@
 //
 //
 
-//#define XXX_FORCE_32BIT_PA
+#define XXX_FORCE_32BIT_PA
 //#define XXX_DEBUG_PMAP_EXTRACT
 //#define USE_CALLOUT_TICK
-//#define USE_MSIX
+#define USE_MSIX
 //#define XXX_DUMP_STAT
-#define XXX_INTR_DEBUG
+//#define XXX_INTR_DEBUG
 //#define XXX_RXINTR_DEBUG
 //#define XXX_TXDESC_DEBUG
 //#define XXX_RXDESC_DEBUG
 //#define XXX_DUMP_RX_COUNTER
 //#define XXX_DUMP_RX_MBUF
 //#define XXX_DUMP_MACTABLE
-//#ifdef XXX_DUMP_RING
-#define XXX_DUMP_RSS_KEY
+//#define XXX_DUMP_RING
+//#define XXX_DUMP_RSSKEY
 //#define XXX_DEBUG_RSSKEY_ZERO
 
 //
@@ -137,6 +137,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
 #include <sys/types.h>
+#include <sys/bitops.h>
 #include <sys/bus.h>
 #include <sys/callout.h>
 #include <sys/cprng.h>
@@ -165,6 +166,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <net/if_dl.h>
 #include <net/if_media.h>
 #include <net/if_ether.h>
+#include <net/rss_config.h>
 
 #include <dev/pci/pcivar.h>
 #include <dev/pci/pcireg.h>
@@ -174,10 +176,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define CONFIG_INTR_MODERATION_ENABLE	1	/* ok */
 #undef CONFIG_LRO_SUPPORT			/* netbsd doesn't support LRO */
 #undef CONFIG_L3_FILTER_SUPPORT			/* netbsd doesn't have L3 filter framework */
-#define CONFIG_RSS_ENABLE		0	/* XXX: doesn't work yet */
+#define CONFIG_RSS_ENABLE		1	/* XXX: doesn't work yet */
 
-#define AQ_NINTR_MAX			(8 + 1)	/* TXRXrings + link */
-#define AQ_NQUEUE_MAX			8
+#define AQ_NQUEUE_MAX			8	/* max 8 per TX/RX */
+#define AQ_NINTR_MAX			(AQ_NQUEUE_MAX + 1)	/* TXRXrings + link. must be < 32 */
 #define AQ_TXD_NUM			2048	/* per ring. must be 8*n */
 #define AQ_RXD_NUM			2048	/* per ring. must be 8*n */
 
@@ -985,9 +987,6 @@ struct aq_softc {
 	bool sc_rss_enable;
 	bool sc_l3_filter_enable;
 
-	uint32_t sc_rss_key[AQ_RSS_HASHKEY_SIZE / sizeof(uint32_t)];
-	uint8_t sc_rss_table[AQ_RSS_INDIRECTION_TABLE_MAX];
-
 	int sc_media_active;
 
 #ifdef USE_CALLOUT_TICK
@@ -1073,7 +1072,7 @@ static int aq_hw_init_ucp(struct aq_softc *);
 static int aq_hw_reset(struct aq_softc *);
 static int aq_fw_downld_dwords(struct aq_softc *, uint32_t, uint32_t *, uint32_t);
 static int aq_get_mac_addr(struct aq_softc *);
-static void aq_init_rsstable(struct aq_softc *);
+static int aq_init_rss(struct aq_softc *);
 static int aq_set_capability(struct aq_softc *);
 
 static int fw1x_reset(struct aq_softc *);
@@ -1343,7 +1342,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 		goto attach_failure;
 
 	aq_get_mac_addr(sc);
-	aq_init_rsstable(sc);
+	aq_init_rss(sc);
 
 	error = aq_hw_init(sc);	/* initialize and interrupts */
 	if (error != 0)
@@ -1594,12 +1593,10 @@ aq_setup_msix(struct aq_softc *sc)
 	sc->sc_ihs[sc->sc_nqueues] = vih;
 	sc->sc_nintrs = sc->sc_nqueues + 1;
 
-	//XXX: temp
+	// XXX: link intr affinity to last cpu
 	kcpuset_zero(affinity);
 	kcpuset_set(affinity, ncpu - 1);
-	error = interrupt_distribute(vih, affinity, NULL);
-	printf("XXXXXXXXXXX: affinity linkstat intr: error=%d\n", error);
-
+	interrupt_distribute(vih, affinity, NULL);
 
 	kcpuset_destroy(affinity);
 
@@ -2837,84 +2834,121 @@ aq_hw_qos_set(struct aq_softc *sc)
 }
 
 /* called once from aq_attach */
-static void
-aq_init_rsstable(struct aq_softc *sc)
-{
-	unsigned int i;
-
-	/* initialize RSS key and redirect table */
-
-	cprng_fast(&sc->sc_rss_key, sizeof(sc->sc_rss_key));
-#if XXX_DEBUG_RSSKEY_ZERO
-	memset(&sc->sc_rss_key, 0, sizeof(sc->sc_rss_key));
-#endif
-
-
-	for (i = 0; i < AQ_RSS_INDIRECTION_TABLE_MAX; i++) {
-		sc->sc_rss_table[i] = i % sc->sc_nqueues;
-	}
-
-#ifdef XXX_DUMP_RSS_KEY
-	printf("rss_key:");
-	for (i = 0; i < __arraycount(sc->sc_rss_key); i++) {
-		printf(" %08x", sc->sc_rss_key[i]);
-	}
-	printf("\n");
-
-	printf("rss_table:");
-	for (i = 0; i < AQ_RSS_INDIRECTION_TABLE_MAX; i++) {
-		printf(" %d", sc->sc_rss_table[i]);
-	}
-	printf("\n");
-#endif
-
-}
-
 static int
-aq_hw_rss_hash_set(struct aq_softc *sc)
+aq_init_rss(struct aq_softc *sc)
 {
+	CTASSERT(AQ_RSS_HASHKEY_SIZE == RSS_KEYSIZE);
+	uint32_t rss_key[RSS_KEYSIZE / sizeof(uint32_t)];
+	uint8_t rss_table[AQ_RSS_INDIRECTION_TABLE_MAX];
 	unsigned int i;
-	int error = 0;
+	int error;
 
-	for (i = 0; i < __arraycount(sc->sc_rss_key); i++) {
-		uint32_t key_data = sc->sc_rss_enable ? sc->sc_rss_key[i] : 0;
+	/* initialize rss key */
+	rss_getkey((uint8_t *)rss_key);
+#ifdef XXX_DEBUG_RSSKEY_ZERO
+	memset(rss_key, 0, sizeof(rss_key));
+#endif
 
+	/* hash to ring table */
+	for (i = 0; i < AQ_RSS_INDIRECTION_TABLE_MAX; i++) {
+		rss_table[i] = i % sc->sc_nqueues;
+	}
+
+#ifdef XXX_DUMP_RSSKEY
+	unsigned char *k = (unsigned char *)rss_key;
+	for (i = 0; i < sizeof(rss_key); i++) {
+		if ((i & 7) == 0) {
+			if (i == 0)
+				printf("rss_key:");
+			else
+				printf("        ");
+		}
+		printf(" 0x%02x", k[i] & 0xff);
+		if ((i & 7) == 7)
+			printf("\n");
+	}
+	for (i = 0; i < AQ_RSS_INDIRECTION_TABLE_MAX; i++) {
+		if ((i & 15) == 0) {
+			if (i == 0)
+				printf("rss_table:");
+			else
+				printf("          ");
+		}
+		printf(" %d", rss_table[i]);
+		if ((i & 15) == 15)
+			printf("\n");
+	}
+#endif
+
+	/*
+	 * set rss key
+	 */
+	for (i = 0; i < __arraycount(rss_key); i++) {
+		uint32_t key_data = sc->sc_rss_enable ? rss_key[i] : 0;
 		AQ_WRITE_REG(sc, RPF_RSS_KEY_WR_DATA_REG, key_data);
 		AQ_WRITE_REG_BIT(sc, RPF_RSS_KEY_ADDR_REG, RPF_RSS_KEY_ADDR, i);
 		AQ_WRITE_REG_BIT(sc, RPF_RSS_KEY_ADDR_REG, RPF_RSS_KEY_WR_EN, 1);
 		WAIT_FOR(AQ_READ_REG_BIT(sc, RPF_RSS_KEY_ADDR_REG, RPF_RSS_KEY_WR_EN) == 0,
 		    1000, 10, &error);
 		if (error != 0) {
-			printf("%s:%d: XXX: timeout\n", __func__, __LINE__);
-			break;
+			device_printf(sc->sc_dev, "%s: rss key write timeout\n", __func__);
+			goto rss_set_timeout;
 		}
 	}
 
-	return error;
-}
+	/*
+	 * set rss indirection table
+	 *
+	 * AQ's rss redirect table requires  3bit*64 (192bit) packed array.
+	 * we'll make it by __BITMAP(3) macros.
+	 */
+	__BITMAP_TYPE(, uint16_t, 3 * AQ_RSS_INDIRECTION_TABLE_MAX) bit3x64;
+	__BITMAP_ZERO(&bit3x64);
 
-static int
-aq_hw_rss_set(struct aq_softc *sc)
-{
-	uint16_t bitary[1 + (AQ_RSS_INDIRECTION_TABLE_MAX * 3 / 16)];
-	int error = 0;
-	unsigned int i;
+#define __3BIT_PACKED_ARRAY_SET(bitmap, idx, val)		\
+	do {							\
+		if (val & 1) {					\
+			__BITMAP_SET((idx) * 3, (bitmap));	\
+		} else {					\
+			__BITMAP_CLR((idx) * 3, (bitmap));	\
+		}						\
+		if (val & 2) {					\
+			__BITMAP_SET((idx) * 3 + 1, (bitmap));	\
+		} else {					\
+			__BITMAP_CLR((idx) * 3 + 1, (bitmap));	\
+		}						\
+		if (val & 4) {					\
+			__BITMAP_SET((idx) * 3 + 2, (bitmap));	\
+		} else {					\
+			__BITMAP_CLR((idx) * 3 + 2, (bitmap));	\
+		}						\
+	} while (0 /* CONSTCOND */)
 
-	memset(bitary, 0, sizeof(bitary));
-	for (i = AQ_RSS_INDIRECTION_TABLE_MAX; i--;) {
-		(*(uint32_t *)(bitary + ((i * 3) / 16))) |=
-		    ((sc->sc_rss_table[i]) << ((i * 3) & 15));
+	for (i = 0; i < AQ_RSS_INDIRECTION_TABLE_MAX; i++) {
+		__3BIT_PACKED_ARRAY_SET(&bit3x64, i, rss_table[i]);
 	}
 
-	for (i = __arraycount(bitary); i--;) {
-		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_WR_DATA_REG, RPF_RSS_REDIR_WR_DATA, bitary[i]);
-		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_ADDR_REG, RPF_RSS_REDIR_ADDR, i);
-		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_ADDR_REG, RPF_RSS_REDIR_WR_EN, 1);
-		WAIT_FOR(AQ_READ_REG_BIT(sc, RPF_RSS_REDIR_ADDR_REG, RPF_RSS_REDIR_WR_EN) == 0,
+	/* write 192bit data in steps of 16bit */
+	for (i = 0; i < (int)__arraycount(bit3x64._b); i++) {
+		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_WR_DATA_REG,
+		    RPF_RSS_REDIR_WR_DATA, bit3x64._b[i]);
+		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_ADDR_REG,
+		    RPF_RSS_REDIR_ADDR, i);
+		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_ADDR_REG,
+		    RPF_RSS_REDIR_WR_EN, 1);
+
+#ifdef XXX_DUMP_RSSKEY
+		printf("packed RSSREDIR[%d] = 0x%04x\n", i, bit3x64._b[i]);
+#endif
+
+		WAIT_FOR(AQ_READ_REG_BIT(sc, RPF_RSS_REDIR_ADDR_REG,
+		   RPF_RSS_REDIR_WR_EN) == 0,
 		    1000, 10, &error);
 		if (error != 0)
 			break;
 	}
+
+ rss_set_timeout:
 	return error;
 }
 
@@ -2929,6 +2963,8 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 	}
 
 	if (!enable) {
+
+#if 1
 		/*
 		 * HW bug workaround:
 		 * Disable RSS for UDP using rx flow filter 0.
@@ -2939,8 +2975,9 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_PROTO_EN, 1);
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_PROTO, RPF_L3_FILTER_L4_PROTO_UDP);
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_RXQUEUE_EN, 1);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_RXQUEUE, 0);	/* -> rxring[0] */
+		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_RXQUEUE, 0); /* always receive on rxring[0] */
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0), RPF_L3_FILTER_L4_ACTION, RPF_ACTION_HOST);
+#endif
 	}
 }
 
@@ -3275,6 +3312,7 @@ aq_txring_alloc(struct aq_softc *sc, struct aq_txring *txring)
 	for (i = 0; i < AQ_TXD_NUM; i++) {
 #define AQ_MAXDMASIZE	(16 * 1024)
 #define AQ_NTXSEGS	32
+		//XXX: todo: error check
 		bus_dmamap_create(sc->sc_dmat, AQ_MAXDMASIZE, AQ_NTXSEGS,
 		    AQ_MAXDMASIZE, 0, 0,
 		    &txring->ring_mbufs[i].dmamap);
@@ -3338,6 +3376,7 @@ aq_rxring_alloc(struct aq_softc *sc, struct aq_rxring *rxring)
 	/* fill rxring with dmamaps */
 	for (i = 0; i < AQ_RXD_NUM; i++) {
 		rxring->ring_mbufs[i].m = NULL;
+		//XXX: todo: error check
 		bus_dmamap_create(sc->sc_dmat, MCLBYTES, 1,
 		    MCLBYTES, 0, 0,
 		    &rxring->ring_mbufs[i].dmamap);
@@ -3466,9 +3505,8 @@ dump_txrings(struct aq_softc *sc)
 	int n, i;
 
 	for (n = 0; n < sc->sc_nqueues; n++) {
-		txring = &sc->sc_txring[n];
+		txring = &sc->sc_queue[n].txring;
 		mutex_enter(&txring->ring_mutex);
-
 
 		printf("# txring=%p (index=%d)\n", txring, txring->ring_index);
 		printf("txring->ring_txdesc        = %p\n", txring->ring_txdesc);
@@ -3481,9 +3519,9 @@ dump_txrings(struct aq_softc *sc)
 
 			printf("txring->ring_mbufs [%d].m        = %p\n", i, txring->ring_mbufs[i].m);
 			printf("txring->ring_txdesc[%d].buf_addr = %08lx\n", i, txring->ring_txdesc[i].buf_addr);
-			printf("txring->ring_txdesc[%d].ctl  = %08x%s%s\n", i, txring->ring_txdesc[i].ctl,
-			    (txring->ring_txdesc[i].ctl & AQ_TXDESC_CTL1_EOP) ? " EOP" : "",
-			    (txring->ring_txdesc[i].ctl & AQ_TXDESC_CTL1_CMD_WB) ? " WB" : "");
+			printf("txring->ring_txdesc[%d].ctl1  = %08x%s%s\n", i, txring->ring_txdesc[i].ctl1,
+			    (txring->ring_txdesc[i].ctl1 & AQ_TXDESC_CTL1_EOP) ? " EOP" : "",
+			    (txring->ring_txdesc[i].ctl1 & AQ_TXDESC_CTL1_CMD_WB) ? " WB" : "");
 			printf("txring->ring_txdesc[%d].ctl2 = %08x\n", i, txring->ring_txdesc[i].ctl2);
 		}
 
@@ -3498,7 +3536,7 @@ dump_rxrings(struct aq_softc *sc)
 	int n, i;
 
 	for (n = 0; n < sc->sc_nqueues; n++) {
-		rxring = &sc->sc_rxring[n];
+		rxring = &sc->sc_queue[n].rxring;
 		mutex_enter(&rxring->ring_mutex);
 
 		printf("# rxring=%p (index=%d)\n", rxring, rxring->ring_index);
@@ -3597,73 +3635,6 @@ aq_legacy_intr(void *arg)
 	return nintr;
 }
 
-//static int
-//aq_legacy_intr(void *arg)
-//{
-//	struct aq_softc *sc = arg;
-//	uint32_t status;
-//	int nintr = 0;
-//	int i, n;
-//#ifdef XXX_INTR_DEBUG
-//	int rxcount[AQ_NQUEUE_MAX];
-//	int txcount[AQ_NQUEUE_MAX];
-//#endif
-//
-//	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
-//#ifdef XXX_INTR_DEBUG
-//	memset(rxcount, 0, sizeof(rxcount));
-//	memset(txcount, 0, sizeof(txcount));
-//	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()), AQ_READ_REG(sc, AQ_INTR_MASK_REG), status, AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
-//#endif
-//
-//	if (status & __BIT(AQ_LINKSTAT_IRQ)) {
-//		nintr += aq_update_link_status(sc);
-//	}
-//
-//	for (i = 0; i < sc->sc_nqueues; i++) {
-//		if (status & __BIT(sc->sc_rx_irq[i])) {
-//			mutex_enter(&sc->sc_queue[i].rxring.ring_mutex);
-//			n = aq_rx_intr(&sc->sc_queue[i].rxring);
-//			mutex_exit(&sc->sc_queue[i].rxring.ring_mutex);
-//			if (n != 0)
-//				nintr++;
-//#ifdef XXX_INTR_DEBUG
-//			rxcount[i] = n;
-//#endif
-//		}
-//	}
-//	for (i = 0; i < sc->sc_nqueues; i++) {
-//		if (status & __BIT(sc->sc_tx_irq[i])) {
-//			mutex_enter(&sc->sc_queue[i].txring.ring_mutex);
-//			n = aq_tx_intr(&sc->sc_queue[i].txring);
-//			mutex_exit(&sc->sc_queue[i].txring.ring_mutex);
-//			if (n != 0)
-//				nintr++;
-//#ifdef XXX_INTR_DEBUG
-//			txcount[i] = n;
-//#endif
-//		}
-//	}
-//
-//#ifdef XXX_INTR_DEBUG
-//	printf("RX:");
-//	for (i = 0; i < sc->sc_nqueues; i++) {
-//		printf("%d%s", rxcount[i], aq_rx_intr_poll(&sc->sc_queue[i].rxring) ? "!" : " ");
-//	}
-//
-//	printf(" / TX:");
-//	for (i = 0; i < sc->sc_nqueues; i++) {
-//		printf("%d%s", txcount[i], aq_tx_intr_poll(&sc->sc_queue[i].txring) ? "!" : " ");
-//	}
-//	printf("\n");
-//#endif
-//
-//	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, 0xffffffff);	//XXX
-//	return nintr;
-//}
-
-
-
 #ifdef USE_MSIX
 static int
 aq_txrx_intr(void *arg)
@@ -3674,20 +3645,21 @@ aq_txrx_intr(void *arg)
 	struct aq_rxring *rxring = &queue->rxring;
 	uint32_t status;
 	int nintr = 0;
-	int txringidx, rxringidx;
-
-	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
+	int txringidx, rxringidx, txirq, rxirq;
 
 	txringidx = txring->ring_index;
 	rxringidx = rxring->ring_index;
+	txirq = sc->sc_tx_irq[txringidx];
+	rxirq = sc->sc_rx_irq[rxringidx];
 
-	//XXX
-	if (txringidx != rxringidx) {
-		printf("XXXXXXXXXX: must be (txringidx %d == rxringidx %d)!\n", txringidx, rxringidx);
+	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
+	if ((status & (__BIT(txirq) | __BIT(rxirq))) == 0) {
+		/* stray interrupt? */
+		return 0;
 	}
 
 #ifdef XXX_INTR_DEBUG
-	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x (tx,rx index=%d,%d)\n", __func__, cpu_index(curcpu()),
+	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x (tx,rx ringindex=%d,%d)\n", __func__, cpu_index(curcpu()),
 	    AQ_READ_REG(sc, AQ_INTR_MASK_REG), status, AQ_READ_REG(sc, AQ_INTR_STATUS_REG),
 	    txringidx, rxringidx);
 #endif
@@ -3700,7 +3672,7 @@ aq_txrx_intr(void *arg)
 	nintr += aq_tx_intr(txring);
 	mutex_exit(&txring->ring_mutex);
 
-	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, __BIT(txringidx));
+	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, __BIT(txirq) | __BIT(rxirq));
 	return nintr;
 }
 
@@ -3959,6 +3931,7 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	return 0;
 }
 
+#ifdef XXX_INTR_DEBUG
 static int
 aq_tx_intr_poll(struct aq_txring *txring)
 {
@@ -3968,6 +3941,7 @@ aq_tx_intr_poll(struct aq_txring *txring)
 		return 0;
 	return 1;
 }
+#endif
 
 static int
 aq_tx_intr(struct aq_txring *txring)
@@ -4057,6 +4031,7 @@ aq_tx_intr(struct aq_txring *txring)
 	return n;
 }
 
+#ifdef XXX_INTR_DEBUG
 static int
 aq_rx_intr_poll(struct aq_rxring *rxring)
 {
@@ -4066,6 +4041,7 @@ aq_rx_intr_poll(struct aq_rxring *rxring)
 		return 0;
 	return 1;
 }
+#endif
 
 static int
 aq_rx_intr(struct aq_rxring *rxring)
@@ -4079,8 +4055,15 @@ aq_rx_intr(struct aq_rxring *rxring)
 	uint16_t rxd_status, rxd_pktlen, rxd_nextdescptr __unused, rxd_vlan __unused;
 	unsigned int idx, n;
 
-	if (rxring->ring_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR))
+	if (rxring->ring_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR)) {
+#ifdef XXX_RXINTR_DEBUG
+	printf("%s:%d: stray interrupt?: readidx=%u, RX_DMA_DESC_HEAD/TAIL=%lu/%u\n", __func__, __LINE__,
+	    rxring->ring_readidx,
+	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR),
+	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
+#endif
 		return 0;
+	}
 
 #ifdef XXX_RXINTR_DEBUG
 	//XXX: need lock
@@ -4095,9 +4078,10 @@ aq_rx_intr(struct aq_rxring *rxring)
 #endif
 
 #ifdef XXX_RXINTR_DEBUG
-	printf("%s:%d: begin: RX_DMA_DESC_HEAD/TAIL=%lu/%u, readidx=%u\n", __func__, __LINE__,
+	printf("%s:%d: begin: readidx=%u, RX_DMA_DESC_HEAD/TAIL=%lu/%u\n", __func__, __LINE__,
+	    rxring->ring_readidx,
 	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR),
-	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)), rxring->ring_readidx);
+	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
 
 	m0 = mprev = NULL;
@@ -4201,8 +4185,8 @@ aq_rx_intr(struct aq_rxring *rxring)
 				tcpudp_csumstatus = "TCP/UDP not checked";
 			}
 
-			printf("RXdesc[%d]\n    type=0x%x, hash=0x%x, status=0x%x, DD=%lu, EOP=%lu, ERR=%lu, pktlen=%u, nextdsc=%u, vlan=%u, sph=%ld, hdrlen=%ld\n",
-			    idx, rxd_type, rxd_hash, rxd_status,
+			printf("RXring[%d].desc[%d]\n    type=0x%x, hash=0x%x, status=0x%x, DD=%lu, EOP=%lu, ERR=%lu, pktlen=%u, nextdsc=%u, vlan=%u, sph=%ld, hdrlen=%ld\n",
+			    ringidx, idx, rxd_type, rxd_hash, rxd_status,
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_DD),
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_EOP),
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_MACERR),
@@ -4320,9 +4304,10 @@ aq_rx_intr(struct aq_rxring *rxring)
 	rxring->ring_readidx = idx;
 
 #ifdef XXX_RXINTR_DEBUG
-	printf("%s:%d: end: RX_DMA_DESC_HEAD/TAIL=%lu/%u, readidx=%u\n", __func__, __LINE__,
+	printf("%s:%d: end: readidx=%u, RX_DMA_DESC_HEAD/TAIL=%lu/%u\n", __func__, __LINE__,
+	    rxring->ring_readidx,
 	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR),
-	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)), rxring->ring_readidx);
+	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
 
 	return n;
@@ -4395,17 +4380,11 @@ aq_init(struct ifnet *ifp)
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_REG, RPB_RPF_RX_BUF_EN, 1);
 
 #ifdef XXX_DUMP_RING
-	//XXX
-	(void)&dump_txrings;
-	(void)&dump_rxrings;
-//	dump_txrings(sc);
-//	dump_rxrings(sc);
+	dump_txrings(sc);
+	dump_rxrings(sc);
 #endif
 
-
-//	aq_hw_start();
-	aq_hw_rss_hash_set(sc);
-	aq_hw_rss_set(sc);
+	aq_init_rss(sc);
 	aq_hw_l3_filter_set(sc, sc->sc_l3_filter_enable);
 
 	aq_enable_intr(sc, true, true);
