@@ -971,8 +971,10 @@ struct aq_softc {
 #define FEATURES_RPF2		0x00000004
 #define FEATURES_MPI_AQ		0x00000008
 #define FEATURES_REV_A0		0x10000000
+#define FEATURES_REV_A		(FEATURES_REV_A0)
 #define FEATURES_REV_B0		0x20000000
 #define FEATURES_REV_B1		0x40000000
+#define FEATURES_REV_B		(FEATURES_REV_B0|FEATURES_REV_B1)
 	uint32_t sc_mbox_addr;
 
 	bool sc_rbl_enabled;
@@ -1950,7 +1952,7 @@ aq_fw_version_init(struct aq_softc *sc)
 
 	if (FW_VERSION_MAJOR(sc) == 1) {
 		sc->sc_fw_ops = &aq_fw1x_ops;
-	} else if (FW_VERSION_MAJOR(sc) >= 2) {
+	} else if ((FW_VERSION_MAJOR(sc) == 2) || (FW_VERSION_MAJOR(sc) == 3)) {
 		sc->sc_fw_ops = &aq_fw2x_ops;
 	} else {
 		aprint_error_dev(sc->sc_dev,
@@ -2688,14 +2690,19 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 	AQ_WRITE_REG_BIT(sc, RPF_VLAN_TPID_REG, RPF_VLAN_TPID_OUTER, ETHERTYPE_QINQ);
 	AQ_WRITE_REG_BIT(sc, RPF_VLAN_TPID_REG, RPF_VLAN_TPID_INNER, ETHERTYPE_VLAN);
 	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_REG, RPF_VLAN_MODE_PROMISC, 1);
-	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_REG, RPF_VLAN_MODE_ACCEPT_UNTAGGED, 1);
-	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_REG, RPF_VLAN_MODE_UNTAGGED_ACTION, RPF_ACTION_HOST);
+
+	if (sc->sc_features & FEATURES_REV_B) {
+		AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_REG, RPF_VLAN_MODE_ACCEPT_UNTAGGED, 1);
+		AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_REG, RPF_VLAN_MODE_UNTAGGED_ACTION, RPF_ACTION_HOST);
+	}
 
 	/* misc */
-	if (sc->sc_features & FEATURES_RPF2)
-		AQ_WRITE_REG(sc, RX_TCP_RSS_HASH_REG, 0x000f001e);	/* XXX: linux:0x000f0000, freebsd:0x00f0001e */
-	else
+	if (sc->sc_features & FEATURES_RPF2) {
+		/* XXX: linux:0x000f0000, freebsd:0x00f0001e */
+		AQ_WRITE_REG(sc, RX_TCP_RSS_HASH_REG, 0x000f001e);
+	} else {
 		AQ_WRITE_REG(sc, RX_TCP_RSS_HASH_REG, 0);
+	}
 
 	AQ_WRITE_REG_BIT(sc, RPF_L2BC_REG, RPF_L2BC_EN, 1);
 	AQ_WRITE_REG_BIT(sc, RPF_L2BC_REG, RPF_L2BC_ACTION, RPF_ACTION_HOST);
