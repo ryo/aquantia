@@ -1114,7 +1114,7 @@ static const struct aq_product {
 	aq_link_speed_t aq_available_rates;
 } aq_products[] = {
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC107,
-	  "Aquantia AQC107 10 Gigabit Ethernet Adapter",
+	  "Aquantia AQC107 10 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_ALL
 	},
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC108,
@@ -1134,35 +1134,35 @@ static const struct aq_product {
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_100M | AQ_LINK_1G | AQ_LINK_2G5
 	},
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC107S,
-	  "Aquantia AQC107S 10 Gigabit Ethernet Adapter",
+	  "Aquantia AQC107S 10 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_ALL
 	},
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC108S,
-	  "Aquantia AQC108S 5 Gigabit Ethernet Adapter",
+	  "Aquantia AQC108S 5 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_100M | AQ_LINK_1G | AQ_LINK_2G5 | AQ_LINK_5G
 	},
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC109S,
-	  "Aquantia AQC109S 2.5 Gigabit Ethernet Adapter",
+	  "Aquantia AQC109S 2.5 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_100M | AQ_LINK_1G | AQ_LINK_2G5
 	},
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC111S,
-	  "Aquantia AQC111S 5 Gigabit Ethernet Adapter",
+	  "Aquantia AQC111S 5 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_100M | AQ_LINK_1G | AQ_LINK_2G5 | AQ_LINK_5G
 	},
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC112S,
-	  "Aquantia AQC112S 2.5 Gigabit Ethernet Adapter",
+	  "Aquantia AQC112S 2.5 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_100M | AQ_LINK_1G | AQ_LINK_2G5
 	},
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_D107,
-	  "Aquantia D107 10 Gigabit Ethernet Adapter",
+	  "Aquantia D107 10 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_ALL
 	},
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_D108,
-	  "Aquantia D108 5 Gigabit Ethernet Adapter",
+	  "Aquantia D108 5 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_100M | AQ_LINK_1G | AQ_LINK_2G5 | AQ_LINK_5G
 	},
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_D109,
-	  "Aquantia D109 2.5 Gigabit Ethernet Adapter",
+	  "Aquantia D109 2.5 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_100M | AQ_LINK_1G | AQ_LINK_2G5
 	}
 };
