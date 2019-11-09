@@ -176,7 +176,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define CONFIG_INTR_MODERATION_ENABLE	1	/* ok */
 #undef CONFIG_LRO_SUPPORT			/* netbsd doesn't support LRO */
 #undef CONFIG_L3_FILTER_SUPPORT			/* netbsd doesn't have L3 filter framework */
-#define CONFIG_RSS_ENABLE		1	/* XXX: doesn't work yet */
+#define CONFIG_RSS_ENABLE		1
 
 #define AQ_NQUEUE_MAX			8	/* max 8 per TX/RX */
 #define AQ_NINTR_MAX			(AQ_NQUEUE_MAX + 1)	/* TXRXrings + link. must be < 32 */
