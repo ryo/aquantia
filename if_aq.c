@@ -1969,20 +1969,20 @@ aq_fw_version_init(struct aq_softc *sc)
 	uint32_t hwrev = AQ_READ_REG(sc, AQ_HW_REVISION_REG);
 	switch (hwrev & 0x0000000f) {
 	case 0x01:
-		aprint_verbose_dev(sc->sc_dev, "Atlantic revision A0, %s\n",
+		aprint_normal_dev(sc->sc_dev, "Atlantic revision A0, %s\n",
 		    fw_vers);
 		sc->sc_features |= FEATURES_REV_A0 |
 		    FEATURES_MPI_AQ | FEATURES_MIPS;
 		break;
 	case 0x02:
-		aprint_verbose_dev(sc->sc_dev, "Atlantic revision B0, %s\n",
+		aprint_normal_dev(sc->sc_dev, "Atlantic revision B0, %s\n",
 		    fw_vers);
 		sc->sc_features |= FEATURES_REV_B0 |
 		    FEATURES_MPI_AQ | FEATURES_MIPS |
 		    FEATURES_TPO2 | FEATURES_RPF2;
 		break;
 	case 0x0A:
-		aprint_verbose_dev(sc->sc_dev, "Atlantic revision B1, %s\n",
+		aprint_normal_dev(sc->sc_dev, "Atlantic revision B1, %s\n",
 		    fw_vers);
 		sc->sc_features |= FEATURES_REV_B1 |
 		    FEATURES_MPI_AQ | FEATURES_MIPS |
