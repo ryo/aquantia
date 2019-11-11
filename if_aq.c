@@ -43,8 +43,6 @@
 
 #define XXX_FORCE_32BIT_PA
 //#define XXX_DEBUG_PMAP_EXTRACT
-//#define USE_CALLOUT_TICK
-#define USE_MSIX
 //#define XXX_DUMP_STAT
 //#define XXX_INTR_DEBUG
 //#define XXX_RXINTR_DEBUG
@@ -173,18 +171,18 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <dev/pci/pcidevs.h>
 
 /* driver configuration */
-#define CONFIG_INTR_MODERATION_ENABLE	1	/* ok */
-#undef CONFIG_LRO_SUPPORT			/* netbsd doesn't support LRO */
-#undef CONFIG_L3_FILTER_SUPPORT			/* netbsd doesn't have L3 filter framework */
-#define CONFIG_RSS_ENABLE		1
+#define CONFIG_INTR_MODERATION_ENABLE	1	/* delayed interrupt */
+#undef CONFIG_LRO_SUPPORT			/* no LRO not suppoted */
+#undef CONFIG_L3_FILTER_SUPPORT			/* no L3 filter suppoted */
 
-#define AQ_NQUEUE_MAX			8	/* max 8 per TX/RX */
-#define AQ_NINTR_MAX			(AQ_NQUEUE_MAX + 1)	/* TXRXrings + link. must be < 32 */
-#define AQ_TXD_NUM			2048	/* per ring. must be 8*n */
-#define AQ_RXD_NUM			2048	/* per ring. must be 8*n */
+#define AQ_NINTR_MAX			(AQ_RSSQUEUE_MAX + AQ_RSSQUEUE_MAX + 1)
+					/* TX + RX + LINK. must be <= 32 */
+#define AQ_TXD_NUM			2048	/* per ring. 8*n && <= 8184 */
+#define AQ_RXD_NUM			2048	/* per ring. 8*n && <= 8184 */
 
 /* hardware specification */
 #define AQ_RINGS_NUM			32
+#define AQ_RSSQUEUE_MAX			8
 #define AQ_RX_DESCRIPTOR_MIN		32
 #define AQ_TX_DESCRIPTOR_MIN		32
 #define AQ_RX_DESCRIPTOR_MAX		8184
@@ -936,15 +934,18 @@ struct aq_softc {
 	void *sc_ihs[AQ_NINTR_MAX];
 	pci_intr_handle_t *sc_intrs;
 
-	int sc_tx_irq[AQ_NQUEUE_MAX];
-	int sc_rx_irq[AQ_NQUEUE_MAX];
+	int sc_tx_irq[AQ_RSSQUEUE_MAX];
+	int sc_rx_irq[AQ_RSSQUEUE_MAX];
 	int sc_linkstat_irq;
+	bool sc_use_txrx_independent_intr;
+	bool sc_use_linkstat_intr;
+	bool sc_use_callout;
+	callout_t sc_tick_ch;
 
 	int sc_nintrs;
-	int sc_affinity_offset;
 	bool sc_msix;
 
-	struct aq_queue sc_queue[AQ_NQUEUE_MAX];
+	struct aq_queue sc_queue[AQ_RSSQUEUE_MAX];
 	int sc_nqueues;
 
 	pci_chipset_tag_t sc_pc;
@@ -989,9 +990,6 @@ struct aq_softc {
 
 	int sc_media_active;
 
-#ifdef USE_CALLOUT_TICK
-	callout_t sc_tick_ch;
-#endif
 	struct ethercom sc_ethercom;
 	struct ether_addr sc_enaddr;
 	struct ifmedia sc_media;
@@ -1026,10 +1024,9 @@ static int aq_match(device_t, cfdata_t, void *);
 static void aq_attach(device_t, device_t, void *);
 static int aq_detach(device_t, int);
 
-static int aq_setup_legacy(struct aq_softc *);
-#ifdef USE_MSIX
-static int aq_setup_msix(struct aq_softc *);
-#endif
+static int aq_setup_msix(struct aq_softc *, struct pci_attach_args *, int, bool, bool);
+static int aq_setup_legacy(struct aq_softc *, struct pci_attach_args *, pci_intr_type_t);
+static int aq_establish_msix_intr(struct aq_softc *, bool, bool);
 
 static int aq_ifmedia_change(struct ifnet * const);
 static void aq_ifmedia_status(struct ifnet * const, struct ifmediareq *);
@@ -1047,16 +1044,12 @@ static void aq_initmedia(struct aq_softc *);
 static int aq_mediachange(struct ifnet *);
 static void aq_enable_intr(struct aq_softc *, bool, bool);
 
-#ifdef USE_CALLOUT_TICK
 static void aq_tick(void *);
-#endif
 static int aq_legacy_intr(void *);
-#ifdef USE_MSIX
 static int aq_link_intr(void *);
 static int aq_txrx_intr(void *);
-#endif
-static int aq_tx_intr(struct aq_txring *);
-static int aq_rx_intr(struct aq_rxring *);
+static int aq_tx_intr(void *);
+static int aq_rx_intr(void *);
 #ifdef XXX_INTR_DEBUG
 static int aq_tx_intr_poll(struct aq_txring *);
 static int aq_rx_intr_poll(struct aq_rxring *);
@@ -1201,15 +1194,11 @@ aq_attach(device_t parent, device_t self, void *aux)
 	pcitag_t tag;
 	pcireg_t command, memtype, bar;
 	const struct aq_product *aqp;
-	pci_intr_type_t max_type;
-	int counts[PCI_INTR_TYPE_SIZE];
 	int error;
 
 	sc->sc_dev = self;
 	mutex_init(&sc->sc_mutex, MUTEX_DEFAULT, IPL_NET);
-#ifdef USE_CALLOUT_TICK
-	callout_init(&sc->sc_tick_ch, 0);	/* XXX: CALLOUT_MPSAFE */
-#endif
+
 	sc->sc_pc = pc = pa->pa_pc;
 	sc->sc_pcitag = tag = pa->pa_tag;
 #ifdef XXX_FORCE_32BIT_PA
@@ -1243,79 +1232,90 @@ aq_attach(device_t parent, device_t self, void *aux)
 		return;
 	}
 
-	sc->sc_msix = false;	/* set true when aq_setup_msix() is succeeded */
-#ifdef USE_MSIX
-	sc->sc_nqueues = MIN(ncpu, AQ_NQUEUE_MAX);
-	sc->sc_nqueues = MIN(sc->sc_nqueues, pci_msix_count(pa->pa_pc, pa->pa_tag));
+	sc->sc_nqueues = MIN(ncpu, AQ_RSSQUEUE_MAX);
 
-	aprint_debug_dev(sc->sc_dev, "AQ_NQUEUE_MAX=%d, ncpu=%d, pci_msix_count=%d -> nqueues=%d\n",
-	    AQ_NQUEUE_MAX, ncpu, pci_msix_count(pa->pa_pc, pa->pa_tag),
-	    sc->sc_nqueues);
+	/* max queue num is 8, and must be 2^n */
+	if (ncpu >= 8)
+		sc->sc_nqueues = 8;
+	else if (ncpu >= 4)
+		sc->sc_nqueues = 4;
+	else if (ncpu >= 2)
+		sc->sc_nqueues = 2;
+	else
+		sc->sc_nqueues = 1;
 
-	max_type = PCI_INTR_TYPE_MSIX;
-	counts[PCI_INTR_TYPE_INTX] = 1;
-	counts[PCI_INTR_TYPE_MSI]  = 1;
-	counts[PCI_INTR_TYPE_MSIX] = sc->sc_nqueues + 1;
- intralloc_retry:
-	if (pci_intr_alloc(pa, &sc->sc_intrs, counts, max_type) != 0) {
-		aprint_error_dev(sc->sc_dev, "failed to allocate interrupt\n");
-		return;
-	}
-	if (pci_intr_type(pc, sc->sc_intrs[0]) == PCI_INTR_TYPE_MSIX) {
-		error = aq_setup_msix(sc);
-		if (error != 0) {
-			pci_intr_release(pc, sc->sc_intrs,
-			    counts[PCI_INTR_TYPE_MSIX]);
-
-			/* Setup for MSI: Disable MSI-X */
-			max_type = PCI_INTR_TYPE_MSI;
-			counts[PCI_INTR_TYPE_INTX] = 1;
-			counts[PCI_INTR_TYPE_MSI]  = 1;
-			counts[PCI_INTR_TYPE_MSIX] = 0;
-			goto intralloc_retry;
-		}
+	int msixcount = pci_msix_count(pa->pa_pc, pa->pa_tag);
+	if (msixcount >= (sc->sc_nqueues * 2 + 1)) {
+		/* TX intrs + RX intrs + LINKSTAT intrs */
+		sc->sc_use_txrx_independent_intr = true;
+		sc->sc_use_linkstat_intr = true;
+		sc->sc_use_callout = false;
 		sc->sc_msix = true;
-	} else if (pci_intr_type(pc, sc->sc_intrs[0]) == PCI_INTR_TYPE_MSI) {
-		sc->sc_nqueues = 1;	/* Must not use multiqueue */
-		error = aq_setup_legacy(sc);
-		if (error != 0) {
-			pci_intr_release(sc->sc_pc, sc->sc_intrs,
-			    counts[PCI_INTR_TYPE_MSI]);
-
-			/* The next try is for INTx: Disable MSI */
-			max_type = PCI_INTR_TYPE_INTX;
-			counts[PCI_INTR_TYPE_INTX] = 1;
-			counts[PCI_INTR_TYPE_MSI]  = 0;
-			counts[PCI_INTR_TYPE_MSIX] = 0;
-			goto intralloc_retry;
-		}
+	} else if (msixcount >= (sc->sc_nqueues * 2)) {
+		/* TX intrs + RX intrs */
+		sc->sc_use_txrx_independent_intr = true;
+		sc->sc_use_linkstat_intr = true;
+		sc->sc_use_callout = false;
+		sc->sc_msix = true;
+	} else if (msixcount >= (sc->sc_nqueues + 1)) {
+		/* TX/RX intrs LINKSTAT intrs */
+		sc->sc_use_txrx_independent_intr = true;
+		sc->sc_use_linkstat_intr = true;
+		sc->sc_use_callout = false;
+		sc->sc_msix = true;
+	} else if (msixcount >= sc->sc_nqueues) {
+		/* TX/RX intrs */
+		sc->sc_use_txrx_independent_intr = true;
+		sc->sc_use_linkstat_intr = true;
+		sc->sc_use_callout = false;
+		sc->sc_msix = true;
 	} else {
-		sc->sc_nqueues = 1;	/* Must not use multiqueue */
-		error = aq_setup_legacy(sc);
-		if (error != 0) {
-			pci_intr_release(sc->sc_pc, sc->sc_intrs,
-			    counts[PCI_INTR_TYPE_INTX]);
-			return;
-		}
+		/* giving up using MSI-X */
+		sc->sc_use_txrx_independent_intr = false;
+		sc->sc_use_linkstat_intr = false;
+		sc->sc_use_callout = false;
+		sc->sc_msix = false;
+		sc->sc_nqueues = 1;
 	}
-#else
-	sc->sc_nqueues = 1;
 
-	max_type = PCI_INTR_TYPE_INTX;
-	counts[PCI_INTR_TYPE_INTX] = 1;
-	counts[PCI_INTR_TYPE_MSI]  = 0;
-	counts[PCI_INTR_TYPE_MSIX] = 0;
-	if (pci_intr_alloc(pa, &sc->sc_intrs, counts, max_type) != 0) {
-		aprint_error_dev(sc->sc_dev, "failed to allocate interrupt\n");
-		return;
+	aprint_debug_dev(sc->sc_dev, "ncpu=%d, pci_msix_count=%d -> nqueues=%d%s, linkstat_intr=%d\n",
+	    ncpu, msixcount, sc->sc_nqueues,
+	    sc->sc_use_txrx_independent_intr ? "*2" : "",
+	    sc->sc_use_linkstat_intr);
+
+	if (sc->sc_msix)
+		error = aq_setup_msix(sc, pa, sc->sc_nqueues, sc->sc_use_txrx_independent_intr, sc->sc_use_linkstat_intr);
+	else
+		error = ENODEV;
+
+	if (error != 0) {
+		/* if MSI-X failed, fallback to MSI with single queue */
+		sc->sc_use_txrx_independent_intr = false;
+		sc->sc_use_linkstat_intr = false;
+		sc->sc_use_callout = false;
+		sc->sc_msix = false;
+		sc->sc_nqueues = 1;
+		error = aq_setup_legacy(sc, pa, PCI_INTR_TYPE_MSI);
 	}
-	error = aq_setup_legacy(sc);
+	if (error != 0) {
+		/* if MSI failed, fallback to INTx */
+		error = aq_setup_legacy(sc, pa, PCI_INTR_TYPE_INTX);
+	}
 	if (error != 0)
 		return;
-#endif
+
+	if (sc->sc_use_callout) {
+		callout_init(&sc->sc_tick_ch, 0);	/* XXX: CALLOUT_MPSAFE */
+	}
 
 	sc->sc_intr_moderation_enable = CONFIG_INTR_MODERATION_ENABLE;
-	sc->sc_rss_enable = CONFIG_RSS_ENABLE;
+
+	if (sc->sc_msix && (sc->sc_nqueues > 1))
+		sc->sc_rss_enable = true;
+	else
+		sc->sc_rss_enable = false;
+
+
 #ifdef CONFIG_L3_FILTER_SUPPORT
 	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_SUPPORT;
 #endif
@@ -1421,9 +1421,9 @@ aq_attach(device_t parent, device_t self, void *aux)
 		sc->sc_statistics_enable = true;
 	}
 
-#ifdef USE_CALLOUT_TICK
-	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
-#endif
+	if (sc->sc_use_callout) {
+		callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
+	}
 
 	return;
 
@@ -1439,178 +1439,135 @@ aq_detach(device_t self, int flags __unused)
 	int i, s;
 
 	if (sc->sc_iosize != 0) {
-		s = splnet();
-		aq_stop(ifp, 0);
-		splx(s);
+		if (ifp->if_softc != NULL) {
+			s = splnet();
+			aq_stop(ifp, 0);
+			splx(s);
+		}
 
-		for (i = 0; i < sc->sc_nintrs; i++) {
+		for (i = 0; i < AQ_NINTR_MAX; i++) {
 			if (sc->sc_ihs[i] != NULL) {
 				pci_intr_disestablish(sc->sc_pc, sc->sc_ihs[i]);
 				sc->sc_ihs[i] = NULL;
 			}
 		}
-		pci_intr_release(sc->sc_pc, sc->sc_intrs, sc->sc_nintrs);
-		sc->sc_intrs = NULL;
+		if (sc->sc_nintrs > 0) {
+			pci_intr_release(sc->sc_pc, sc->sc_intrs, sc->sc_nintrs);
+			sc->sc_intrs = NULL;
+			sc->sc_nintrs = 0;
+		}
 
 		aq_txrx_rings_free(sc);
 
-		ether_ifdetach(ifp);
-		if_detach(ifp);
+		if (ifp->if_softc != NULL) {
+			ether_ifdetach(ifp);
+			if_detach(ifp);
+		}
 
 		aprint_debug_dev(sc->sc_dev, "%s: bus_space_unmap\n", __func__);
 		bus_space_unmap(sc->sc_iot, sc->sc_ioh, sc->sc_iosize);
 		sc->sc_iosize = 0;
 	}
 
-#ifdef USE_CALLOUT_TICK
-	callout_stop(&sc->sc_tick_ch);
-#endif
+	if (sc->sc_use_callout) {
+		callout_stop(&sc->sc_tick_ch);
+	}
 	mutex_destroy(&sc->sc_mutex);
 
 	return 0;
 }
 
 static int
-aq_setup_legacy(struct aq_softc *sc)
+aq_establish_intr(struct aq_softc *sc, int intno, kcpuset_t *affinity, int (*func)(void *), void *arg, const char *xname)
 {
-	pci_chipset_tag_t pc = sc->sc_pc;
-	const char *intrstr;
 	char intrbuf[PCI_INTRSTR_LEN];
+	pci_chipset_tag_t pc = sc->sc_pc;
+	void *vih;
+	const char *intrstr = NULL;
 
-	intrstr = pci_intr_string(pc, sc->sc_intrs[0], intrbuf, sizeof(intrbuf));
-	sc->sc_ihs[0] = pci_intr_establish_xname(pc, sc->sc_intrs[0], IPL_NET, aq_legacy_intr,
-	    sc, device_xname(sc->sc_dev));
-	if (sc->sc_ihs[0] == NULL) {
-		aprint_error_dev(sc->sc_dev, "unable to establish %s",
-		    (pci_intr_type(pc, sc->sc_intrs[0]) == PCI_INTR_TYPE_MSI) ?
-		    "MSI" : "INTx");
-		return ENOMEM;
+	intrstr = pci_intr_string(pc, sc->sc_intrs[intno], intrbuf,
+	    sizeof(intrbuf));
+
+#ifdef AQ_MPSAFE
+	pci_intr_setattr(pc, &sc->sc_intrs[intno],
+	    PCI_INTR_MPSAFE, true);
+#endif
+
+	vih = pci_intr_establish_xname(pc, sc->sc_intrs[intno],
+	    IPL_NET, func, arg, xname);
+	if (vih == NULL) {
+		aprint_error_dev(sc->sc_dev,
+		    "unable to establish MSI-X%s%s for %s\n",
+		    intrstr ? " at " : "",
+		    intrstr ? intrstr : "", xname);
+		return EIO;
 	}
-	aprint_normal_dev(sc->sc_dev, "interrupting at %s\n", intrstr);
-	sc->sc_nintrs = 1;
+	sc->sc_ihs[intno] = vih;
 
-	/* map IRQ statically */
-	sc->sc_tx_irq[0] = 0;
-	sc->sc_rx_irq[0] = 16;
-	sc->sc_linkstat_irq = 31;
+	if (affinity != NULL) {
+		/* Round-robin affinity */
+		kcpuset_zero(affinity);
+		kcpuset_set(affinity, intno % ncpu);
+		interrupt_distribute(vih, affinity, NULL);
+	}
 
 	return 0;
 }
 
-#ifdef USE_MSIX
 static int
-aq_setup_msix(struct aq_softc *sc)
+aq_establish_msix_intr(struct aq_softc *sc, bool txrx_independent, bool linkintr)
 {
-	void *vih;
 	kcpuset_t *affinity;
-	int error, i, txrx_established;
-	pci_chipset_tag_t pc = sc->sc_pc;
-	const char *intrstr = NULL;
-	char intrbuf[PCI_INTRSTR_LEN];
+	int error, intno, i;
 	char intr_xname[INTRDEVNAMEBUF];
-
-	if (sc->sc_nqueues < ncpu) {
-		/*
-		 * To avoid other devices' interrupts, the affinity of Tx/Rx
-		 * interrupts start from CPU#1.
-		 */
-		sc->sc_affinity_offset = 1;
-	} else {
-		/*
-		 * In this case, this device use all CPUs. So, we unify
-		 * affinitied cpu_index to msix vector number for readability.
-		 */
-		sc->sc_affinity_offset = 0;
-	}
 
 	kcpuset_create(&affinity, false);
 
-	/*
-	 * TX/RX interrupts
-	 */
-	txrx_established = 0;
-	for (i = 0; i < sc->sc_nqueues; i++) {
-		struct aq_queue *aqq = &sc->sc_queue[i];
-		int affinity_to = (sc->sc_affinity_offset + i) % ncpu;
+	intno = 0;
 
-		intrstr = pci_intr_string(pc, sc->sc_intrs[i], intrbuf,
-		    sizeof(intrbuf));
-#ifdef WM_MPSAFE
-		pci_intr_setattr(pc, &sc->sc_intrs[i],
-		    PCI_INTR_MPSAFE, true);
-#endif
-		memset(intr_xname, 0, sizeof(intr_xname));
-		snprintf(intr_xname, sizeof(intr_xname), "%s TXRX%d",
-		    device_xname(sc->sc_dev), i);
-		vih = pci_intr_establish_xname(pc, sc->sc_intrs[i],
-		    IPL_NET, aq_txrx_intr, aqq, intr_xname);
-		if (vih == NULL) {
-			aprint_error_dev(sc->sc_dev,
-			    "unable to establish MSI-X(for TX and RX)%s%s\n",
-			    intrstr ? " at " : "",
-			    intrstr ? intrstr : "");
+	if (txrx_independent) {
+		for (i = 0; i < sc->sc_nqueues; i++) {
+			snprintf(intr_xname, sizeof(intr_xname), "%s RX%d",
+			    device_xname(sc->sc_dev), i);
+			sc->sc_rx_irq[i] = intno;
+			error = aq_establish_intr(sc, intno++, affinity, aq_rx_intr, &sc->sc_queue[i].rxring, intr_xname);
+			if (error != 0)
+				goto fail;
+		}
+		for (i = 0; i < sc->sc_nqueues; i++) {
+			snprintf(intr_xname, sizeof(intr_xname), "%s TX%d",
+			    device_xname(sc->sc_dev), i);
+			sc->sc_tx_irq[i] = intno;
+			error = aq_establish_intr(sc, intno++, affinity, aq_tx_intr, &sc->sc_queue[i].txring, intr_xname);
+			if (error != 0)
+				goto fail;
+		}
+	} else {
+		for (i = 0; i < sc->sc_nqueues; i++) {
+			snprintf(intr_xname, sizeof(intr_xname), "%s TXRX%d",
+			    device_xname(sc->sc_dev), i);
+			sc->sc_rx_irq[i] = intno;
+			sc->sc_tx_irq[i] = intno;
+			error = aq_establish_intr(sc, intno++, affinity, aq_txrx_intr, &sc->sc_queue[i], intr_xname);
+			if (error != 0)
+				goto fail;
+		}
+	}
 
+	if (linkintr) {
+		snprintf(intr_xname, sizeof(intr_xname), "%s LINK",
+		    device_xname(sc->sc_dev));
+		sc->sc_linkstat_irq = intno;
+		error = aq_establish_intr(sc, intno++, affinity, aq_link_intr, sc, intr_xname);
+		if (error != 0)
 			goto fail;
-		}
-		kcpuset_zero(affinity);
-		/* Round-robin affinity */
-		kcpuset_set(affinity, affinity_to);
-		error = interrupt_distribute(vih, affinity, NULL);
-		if (error == 0) {
-			aprint_normal_dev(sc->sc_dev,
-			    "for TX and RX interrupting at %s affinity to %u\n",
-			    intrstr, affinity_to);
-		} else {
-			aprint_normal_dev(sc->sc_dev,
-			    "for TX and RX interrupting at %s\n", intrstr);
-		}
-		sc->sc_ihs[i] = vih;
-		txrx_established++;
 	}
-
-	/* linkstatus interrupt */
-	intrstr = pci_intr_string(pc, sc->sc_intrs[sc->sc_nqueues], intrbuf,
-	    sizeof(intrbuf));
-#ifdef WM_MPSAFE
-	pci_intr_setattr(pc, &sc->sc_intrs[sc->sc_nqueues], PCI_INTR_MPSAFE, true);
-#endif
-	memset(intr_xname, 0, sizeof(intr_xname));
-	snprintf(intr_xname, sizeof(intr_xname), "%s LINK",
-	    device_xname(sc->sc_dev));
-	vih = pci_intr_establish_xname(pc, sc->sc_intrs[sc->sc_nqueues],
-	    IPL_NET, aq_link_intr, sc, intr_xname);
-	if (vih == NULL) {
-		aprint_error_dev(sc->sc_dev,
-		    "unable to establish MSI-X(for LINK)%s%s\n",
-		    intrstr ? " at " : "",
-		    intrstr ? intrstr : "");
-
-		goto fail;
-	}
-	/* Keep default affinity to LINK interrupt */
-	aprint_normal_dev(sc->sc_dev,
-	    "for LINK interrupting at %s\n", intrstr);
-	sc->sc_ihs[sc->sc_nqueues] = vih;
-	sc->sc_nintrs = sc->sc_nqueues + 1;
-
-	// XXX: link intr affinity to last cpu
-	kcpuset_zero(affinity);
-	kcpuset_set(affinity, ncpu - 1);
-	interrupt_distribute(vih, affinity, NULL);
 
 	kcpuset_destroy(affinity);
-
-	/* RING to IRQ mapping */
-	for (i = 0; i < sc->sc_nqueues; i++) {
-		sc->sc_tx_irq[i] = i;
-		sc->sc_rx_irq[i] = i;
-	}
-	sc->sc_linkstat_irq = sc->sc_nqueues;
-
 	return 0;
 
  fail:
-	for (i = 0; i < sc->sc_nqueues; i++) {
+	for (i = 0; i < AQ_NINTR_MAX; i++) {
 		if (sc->sc_ihs[i] != NULL) {
 			pci_intr_disestablish(sc->sc_pc, sc->sc_ihs[i]);
 			sc->sc_ihs[i] = NULL;
@@ -1620,7 +1577,66 @@ aq_setup_msix(struct aq_softc *sc)
 	kcpuset_destroy(affinity);
 	return ENOMEM;
 }
-#endif
+
+static int
+aq_setup_msix(struct aq_softc *sc, struct pci_attach_args *pa, int nqueue, bool txrx_independent, bool linkintr)
+{
+	int error, nintr;
+
+	if (txrx_independent)
+		nintr = nqueue * 2;
+	else
+		nintr = nqueue;
+
+	if (linkintr)
+		nintr++;
+
+	error = pci_msix_alloc_exact(pa, &sc->sc_intrs, nintr);
+	if (error != 0) {
+		aprint_error_dev(sc->sc_dev,
+		    "failed to allocate MSI-X interrupts\n");
+		goto fail;
+	}
+
+	error = aq_establish_msix_intr(sc, txrx_independent, linkintr);
+	if (error == 0) {
+		sc->sc_nintrs = nintr;
+	} else {
+		pci_intr_release(sc->sc_pc, sc->sc_intrs, nintr);
+		sc->sc_nintrs = 0;
+	}
+ fail:
+	return error;
+
+}
+
+static int
+aq_setup_legacy(struct aq_softc *sc, struct pci_attach_args *pa, pci_intr_type_t inttype)
+{
+	int counts[PCI_INTR_TYPE_SIZE];
+	int error, nintr;
+
+	nintr = 1;
+
+	memset(counts, 0, sizeof(counts));
+	counts[inttype] = nintr;
+
+	error = pci_intr_alloc(pa, &sc->sc_intrs, counts, inttype);
+	if (error != 0) {
+		aprint_error_dev(sc->sc_dev,
+		    "failed to allocate%s interrupts\n",
+		    (inttype == PCI_INTR_TYPE_MSI) ? " MSI" : "");
+		return error;
+	}
+	error = aq_establish_intr(sc, 0, NULL, aq_legacy_intr, sc, device_xname(sc->sc_dev));
+	if (error == 0) {
+		sc->sc_nintrs = nintr;
+	} else {
+		pci_intr_release(sc->sc_pc, sc->sc_intrs, nintr);
+		sc->sc_nintrs = 0;
+	}
+	return error;
+}
 
 static void
 global_software_reset(struct aq_softc *sc)
@@ -2491,7 +2507,7 @@ aq_mediastatus_update(struct aq_softc *sc)
 
 	switch (sc->sc_link_rate) {
 	case AQ_LINK_100M:
-		sc->sc_media_active |= IFM_100_TX | IFM_FDX;
+		sc->sc_media_active |= IFM_100_TX | IFM_FDX;	// XXX: or HD?
 		break;
 	case AQ_LINK_1G:
 		sc->sc_media_active |= IFM_1000_T | IFM_FDX;
@@ -2583,7 +2599,7 @@ aq_initmedia(struct aq_softc *sc)
 	IFMEDIA_ETHER_ADD(sc, IFM_NONE);
 	if (sc->sc_available_rates & AQ_LINK_100M) {
 		IFMEDIA_ETHER_ADD(sc, IFM_100_TX);
-		IFMEDIA_ETHER_ADD(sc, IFM_100_TX | IFM_FDX | IFM_FLOW);
+		IFMEDIA_ETHER_ADD(sc, IFM_100_TX | IFM_FLOW);
 		IFMEDIA_ETHER_ADD(sc, IFM_100_TX | IFM_FDX | IFM_FLOW);
 	}
 	if (sc->sc_available_rates & AQ_LINK_1G) {
@@ -2677,7 +2693,17 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 		AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_REG, RPB_RPF_RX_FC_MODE, 1);
 
 		/* RSS Ring selection */
-		AQ_WRITE_REG(sc, RX_FLR_RSS_CONTROL1_REG, RX_FLR_RSS_CONTROL1_EN | 0x33333333);
+		switch (sc->sc_nqueues) {
+		case 2:
+			AQ_WRITE_REG(sc, RX_FLR_RSS_CONTROL1_REG, RX_FLR_RSS_CONTROL1_EN | 0x11111111);
+			break;
+		case 4:
+			AQ_WRITE_REG(sc, RX_FLR_RSS_CONTROL1_REG, RX_FLR_RSS_CONTROL1_EN | 0x22222222);
+			break;
+		case 8:
+			AQ_WRITE_REG(sc, RX_FLR_RSS_CONTROL1_REG, RX_FLR_RSS_CONTROL1_EN | 0x33333333);
+			break;
+		}
 	}
 
 	/* L2 and Multicast filters */
@@ -2762,13 +2788,13 @@ aq_hw_interrupt_moderation_set(struct aq_softc *sc)
 		AQ_WRITE_REG_BIT(sc, RX_DMA_INT_DESC_WRWB_EN_REG, RX_DMA_INT_DESC_WRWB_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_INT_DESC_WRWB_EN_REG, RX_DMA_INT_DESC_MODERATE_EN, 1);
 
-		for (i = 0; i < AQ_NQUEUE_MAX; i++) {
+		for (i = 0; i < AQ_RINGS_NUM; i++) {
 			AQ_WRITE_REG(sc, TX_INTR_MODERATION_CTL_REG(i),
 			    __SHIFTIN(tx_min, TX_INTR_MODERATION_CTL_MIN) |
 			    __SHIFTIN(tx_max, TX_INTR_MODERATION_CTL_MAX) |
 			    TX_INTR_MODERATION_CTL_EN);
 		}
-		for (i = 0; i < AQ_NQUEUE_MAX; i++) {
+		for (i = 0; i < AQ_RINGS_NUM; i++) {
 			AQ_WRITE_REG(sc, RX_INTR_MODERATION_CTL_REG(i),
 			    __SHIFTIN(rx_min, RX_INTR_MODERATION_CTL_MIN) |
 			    __SHIFTIN(rx_max, RX_INTR_MODERATION_CTL_MAX) |
@@ -2781,10 +2807,10 @@ aq_hw_interrupt_moderation_set(struct aq_softc *sc)
 		AQ_WRITE_REG_BIT(sc, RX_DMA_INT_DESC_WRWB_EN_REG, RX_DMA_INT_DESC_WRWB_EN, 1);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_INT_DESC_WRWB_EN_REG, RX_DMA_INT_DESC_MODERATE_EN, 0);
 
-		for (i = 0; i < AQ_NQUEUE_MAX; i++) {
+		for (i = 0; i < AQ_RINGS_NUM; i++) {
 			AQ_WRITE_REG(sc, TX_INTR_MODERATION_CTL_REG(i), 0);
 		}
-		for (i = 0; i < AQ_NQUEUE_MAX; i++) {
+		for (i = 0; i < AQ_RINGS_NUM; i++) {
 			AQ_WRITE_REG(sc, RX_INTR_MODERATION_CTL_REG(i), 0);
 		}
 	}
@@ -2964,7 +2990,6 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 	}
 
 	if (!enable) {
-
 #if 1
 		/*
 		 * HW bug workaround:
@@ -3568,7 +3593,6 @@ aq_txrx_rings_free(struct aq_softc *sc)
 	}
 }
 
-#ifdef USE_CALLOUT_TICK
 static void
 aq_tick(void *arg)
 {
@@ -3578,7 +3602,6 @@ aq_tick(void *arg)
 
 	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
 }
-#endif
 
 /* interrupt enable/disable */
 static void
@@ -3622,21 +3645,16 @@ aq_legacy_intr(void *arg)
 		nintr += aq_update_link_status(sc);
 
 	if (status & __BIT(sc->sc_rx_irq[0])) {
-		mutex_enter(&sc->sc_queue[0].rxring.ring_mutex);
 		nintr += aq_rx_intr(&sc->sc_queue[0].rxring);
-		mutex_exit(&sc->sc_queue[0].rxring.ring_mutex);
 	}
 
 	if (status & __BIT(sc->sc_tx_irq[0])) {
-		mutex_enter(&sc->sc_queue[0].txring.ring_mutex);
 		nintr += aq_tx_intr(&sc->sc_queue[0].txring);
-		mutex_exit(&sc->sc_queue[0].txring.ring_mutex);
 	}
 
 	return nintr;
 }
 
-#ifdef USE_MSIX
 static int
 aq_txrx_intr(void *arg)
 {
@@ -3665,13 +3683,8 @@ aq_txrx_intr(void *arg)
 	    txringidx, rxringidx);
 #endif
 
-	mutex_enter(&rxring->ring_mutex);
 	nintr += aq_rx_intr(rxring);
-	mutex_exit(&rxring->ring_mutex);
-
-	mutex_enter(&txring->ring_mutex);
 	nintr += aq_tx_intr(txring);
-	mutex_exit(&txring->ring_mutex);
 
 	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, __BIT(txirq) | __BIT(rxirq));
 	return nintr;
@@ -3697,7 +3710,6 @@ aq_link_intr(void *arg)
 
 	return nintr;
 }
-#endif
 
 static void
 aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
@@ -3945,8 +3957,9 @@ aq_tx_intr_poll(struct aq_txring *txring)
 #endif
 
 static int
-aq_tx_intr(struct aq_txring *txring)
+aq_tx_intr(void *arg)
 {
+	struct aq_txring *txring = arg;
 	struct aq_softc *sc = txring->ring_sc;
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
 	unsigned int idx, hw_head, n;
@@ -3956,6 +3969,8 @@ aq_tx_intr(struct aq_txring *txring)
 	hw_head = AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->ring_index), TX_DMA_DESC_HEAD_PTR);
 	if (hw_head == txring->ring_considx)
 		return 0;
+
+	mutex_enter(&txring->ring_mutex);
 
 #if 0
 	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u prod/cons=%d/%d\n", __func__, __LINE__, txring->ring_index,
@@ -4029,6 +4044,8 @@ aq_tx_intr(struct aq_txring *txring)
 #endif
 	}
 
+	mutex_exit(&txring->ring_mutex);
+
 	return n;
 }
 
@@ -4045,8 +4062,9 @@ aq_rx_intr_poll(struct aq_rxring *rxring)
 #endif
 
 static int
-aq_rx_intr(struct aq_rxring *rxring)
+aq_rx_intr(void *arg)
 {
+	struct aq_rxring *rxring = arg;
 	struct aq_softc *sc = rxring->ring_sc;
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
 	const int ringidx = rxring->ring_index;
@@ -4066,8 +4084,9 @@ aq_rx_intr(struct aq_rxring *rxring)
 		return 0;
 	}
 
+	mutex_enter(&rxring->ring_mutex);
+
 #ifdef XXX_RXINTR_DEBUG
-	//XXX: need lock
 	printf("# %s:%d\n", __func__, __LINE__);
 #endif
 
@@ -4311,6 +4330,7 @@ aq_rx_intr(struct aq_rxring *rxring)
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
 
+	mutex_exit(&rxring->ring_mutex);
 	return n;
 }
 
@@ -4343,7 +4363,7 @@ aq_ifflags_cb(struct ethercom *ec)
 
 	ecchange = ec->ec_capenable ^ sc->sc_ec_capenable;
 	if (ecchange & ETHERCAP_VLAN_HWTAGGING) {
-		for (i = 0; i < AQ_NQUEUE_MAX; i++) {
+		for (i = 0; i < AQ_RINGS_NUM; i++) {
 			AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_REG(i), RX_DMA_DESC_VLAN_STRIP,
 			    (ec->ec_capenable & ETHERCAP_VLAN_HWTAGGING) ? 1 : 0);
 		}
@@ -4390,10 +4410,10 @@ aq_init(struct ifnet *ifp)
 
 	aq_enable_intr(sc, true, true);
 
-#ifdef USE_CALLOUT_TICK
-	/* for resume */
-	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
-#endif
+	if (sc->sc_use_callout) {
+		/* for resume */
+		callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
+	}
 
 	/* ready */
 	ifp->if_flags |= IFF_RUNNING;
@@ -4497,9 +4517,9 @@ aq_stop(struct ifnet *ifp, int disable)
 	if (!disable) {
 		/* when pmf stop, disable link status intr, and callout */
 		aq_enable_intr(sc, false, false);
-#ifdef USE_CALLOUT_TICK
-		callout_stop(&sc->sc_tick_ch);
-#endif
+		if (sc->sc_use_callout) {
+			callout_stop(&sc->sc_tick_ch);
+		}
 	}
 
 	ifp->if_flags &= ~(IFF_RUNNING | IFF_OACTIVE);
