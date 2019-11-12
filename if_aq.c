@@ -42,6 +42,7 @@
 //
 
 #define XXX_FORCE_32BIT_PA
+#define XXX_NO_MSIX
 //#define XXX_DEBUG_PMAP_EXTRACT
 //#define XXX_DUMP_STAT
 //#define XXX_INTR_DEBUG
@@ -1272,17 +1273,17 @@ aq_attach(device_t parent, device_t self, void *aux)
 		sc->sc_msix = true;
 	} else {
 		/* giving up using MSI-X */
-		sc->sc_use_txrx_independent_intr = false;
-		sc->sc_use_linkstat_intr = false;
-		sc->sc_use_callout = false;
 		sc->sc_msix = false;
-		sc->sc_nqueues = 1;
 	}
 
 	aprint_debug_dev(sc->sc_dev, "ncpu=%d, pci_msix_count=%d -> nqueues=%d%s, linkstat_intr=%d\n",
 	    ncpu, msixcount, sc->sc_nqueues,
 	    sc->sc_use_txrx_independent_intr ? "*2" : "",
 	    sc->sc_use_linkstat_intr);
+
+#ifdef XXX_NO_MSIX
+	sc->sc_msix = false;
+#endif
 
 	if (sc->sc_msix)
 		error = aq_setup_msix(sc, pa, sc->sc_nqueues, sc->sc_use_txrx_independent_intr, sc->sc_use_linkstat_intr);
