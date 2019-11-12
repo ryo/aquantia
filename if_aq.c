@@ -47,6 +47,7 @@
 //#define XXX_INTR_DEBUG
 //#define XXX_RXINTR_DEBUG
 //#define XXX_TXDESC_DEBUG
+//#define XXX_TXINTR_DEBUG
 //#define XXX_RXDESC_DEBUG
 //#define XXX_DUMP_RX_COUNTER
 //#define XXX_DUMP_RX_MBUF
@@ -3877,7 +3878,7 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	if (vlan_has_tag(m)) {
 		ctl1 = AQ_TXDESC_CTL1_TYPE_TXC;
 #ifdef XXX_TXDESC_DEBUG
-		printf("TXdesc[%d] set VLANID %u\n", idx, vlan_get_tag(m));
+		printf("TXring[%d].desc[%d] set VLANID %u\n", txring->ring_index, idx, vlan_get_tag(m));
 #endif
 		ctl1 |= __SHIFTIN(vlan_get_tag(m), AQ_TXDESC_CTL1_VID);
 
@@ -3919,7 +3920,8 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 		}
 
 #ifdef XXX_TXDESC_DEBUG
-		printf("TXdesc[%d] seg:%d/%d buf_addr=%012lx, len=%-5lu ctl1=%08x ctl2=%08x%s\n",
+		printf("TXring[%d].desc[%d] seg:%d/%d buf_addr=%012lx, len=%-5lu ctl1=%08x ctl2=%08x%s\n",
+		    txring->ring_index,
 		    idx,
 		    i, map->dm_nsegs - 1,
 		    map->dm_segs[i].ds_addr,
@@ -3967,12 +3969,16 @@ aq_tx_intr(void *arg)
 	//XXX: need lock
 
 	hw_head = AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->ring_index), TX_DMA_DESC_HEAD_PTR);
-	if (hw_head == txring->ring_considx)
+	if (hw_head == txring->ring_considx) {
+#ifdef XXX_TXINTR_DEBUG
+	printf("%s:%d: ringidx=%d, head/cons=%d/%d. NO NEED to collect mbufs\n", __func__, __LINE__, txring->ring_index, hw_head, txring->ring_considx);
+#endif
 		return 0;
+	}
 
 	mutex_enter(&txring->ring_mutex);
 
-#if 0
+#ifdef XXX_TXINTR_DEBUG
 	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u prod/cons=%d/%d\n", __func__, __LINE__, txring->ring_index,
 	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->ring_index), TX_DMA_DESC_HEAD_PTR),
 	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->ring_index)),
@@ -4440,7 +4446,7 @@ aq_start(struct ifnet *ifp)
 
 	txring = &sc->sc_queue[0].txring;	// XXX: select TX ring[0]
 
-#if 0
+#ifdef XXX_TXDESC_DEBUG
 	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u, INTR_MASK/INTR_STATUS=%08x/%08x\n",
 	    __func__, __LINE__, txring->ring_index,
 	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->ring_index), TX_DMA_DESC_HEAD_PTR),
