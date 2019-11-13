@@ -42,7 +42,8 @@
 //
 
 #define XXX_FORCE_32BIT_PA
-#define XXX_NO_MSIX
+#define XXX_NO_TXRX_INDEPENDENT
+//#define XXX_NO_MSIX
 //#define XXX_DEBUG_PMAP_EXTRACT
 //#define XXX_DUMP_STAT
 //#define XXX_INTR_DEBUG
@@ -1247,6 +1248,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 		sc->sc_nqueues = 1;
 
 	int msixcount = pci_msix_count(pa->pa_pc, pa->pa_tag);
+#ifndef XXX_NO_TXRX_INDEPENDENT
 	if (msixcount >= (sc->sc_nqueues * 2 + 1)) {
 		/* TX intrs + RX intrs + LINKSTAT intrs */
 		sc->sc_use_txrx_independent_intr = true;
@@ -1259,15 +1261,17 @@ aq_attach(device_t parent, device_t self, void *aux)
 		sc->sc_use_linkstat_intr = true;
 		sc->sc_use_callout = false;
 		sc->sc_msix = true;
-	} else if (msixcount >= (sc->sc_nqueues + 1)) {
+	} else
+#endif
+	if (msixcount >= (sc->sc_nqueues + 1)) {
 		/* TX/RX intrs LINKSTAT intrs */
-		sc->sc_use_txrx_independent_intr = true;
+		sc->sc_use_txrx_independent_intr = false;
 		sc->sc_use_linkstat_intr = true;
 		sc->sc_use_callout = false;
 		sc->sc_msix = true;
 	} else if (msixcount >= sc->sc_nqueues) {
 		/* TX/RX intrs */
-		sc->sc_use_txrx_independent_intr = true;
+		sc->sc_use_txrx_independent_intr = false;
 		sc->sc_use_linkstat_intr = true;
 		sc->sc_use_callout = false;
 		sc->sc_msix = true;
