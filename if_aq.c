@@ -4174,7 +4174,7 @@ aq_rx_intr(void *arg)
 				"UDP",
 				"SCTP",
 				"ICMP",
-				"ARP",
+				"OTHERS",
 				"PKTTYPE_PROTO5", 
 				"PKTTYPE_PROTO6", 
 				"PKTTYPE_PROTO7"
