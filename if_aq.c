@@ -2917,9 +2917,9 @@ aq_init_rss(struct aq_softc *sc)
 	 * set rss key
 	 */
 	for (i = 0; i < __arraycount(rss_key); i++) {
-		uint32_t key_data = sc->sc_rss_enable ? rss_key[i] : 0;
+		uint32_t key_data = sc->sc_rss_enable ? ntohl(rss_key[i]) : 0;
 		AQ_WRITE_REG(sc, RPF_RSS_KEY_WR_DATA_REG, key_data);
-		AQ_WRITE_REG_BIT(sc, RPF_RSS_KEY_ADDR_REG, RPF_RSS_KEY_ADDR, i);
+		AQ_WRITE_REG_BIT(sc, RPF_RSS_KEY_ADDR_REG, RPF_RSS_KEY_ADDR, __arraycount(rss_key) - 1 - i);
 		AQ_WRITE_REG_BIT(sc, RPF_RSS_KEY_ADDR_REG, RPF_RSS_KEY_WR_EN, 1);
 		WAIT_FOR(AQ_READ_REG_BIT(sc, RPF_RSS_KEY_ADDR_REG, RPF_RSS_KEY_WR_EN) == 0,
 		    1000, 10, &error);
@@ -4216,7 +4216,7 @@ aq_rx_intr(void *arg)
 				tcpudp_csumstatus = "TCP/UDP not checked";
 			}
 
-			printf("RXring[%d].desc[%d]\n    type=0x%x, hash=0x%x, status=0x%x, DD=%lu, EOP=%lu, ERR=%lu, pktlen=%u, nextdsc=%u, vlan=%u, sph=%ld, hdrlen=%ld\n",
+			printf("RXring[%d].desc[%d]\n    type=0x%x, RssHash=0x%08x, status=0x%x, DD=%lu, EOP=%lu, ERR=%lu, pktlen=%u, nextdsc=%u, vlan=%u, sph=%ld, hdrlen=%ld\n",
 			    ringidx, idx, rxd_type, rxd_hash, rxd_status,
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_DD),
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_EOP),
