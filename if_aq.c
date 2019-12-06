@@ -42,17 +42,20 @@
 //
 
 #define XXX_FORCE_32BIT_PA
-#define XXX_NO_TXRX_INDEPENDENT
+//#define XXX_FORCE_UDP_TO_RING0
+//#define XXX_NO_TXRX_INDEPENDENT
 //#define XXX_NO_MSIX
 //#define XXX_DEBUG_PMAP_EXTRACT
+//#define XXX_FORCE_USE_CALLOUT_TICK
 //#define XXX_DUMP_STAT
 //#define XXX_INTR_DEBUG
 //#define XXX_RXINTR_DEBUG
+//#define XXX_RXDESC_DEBUG
+//#define XXX_RXDESC_EOP_CHECK
+//#define XXX_DUMP_RX_MBUF
 //#define XXX_TXDESC_DEBUG
 //#define XXX_TXINTR_DEBUG
-//#define XXX_RXDESC_DEBUG
 //#define XXX_DUMP_RX_COUNTER
-//#define XXX_DUMP_RX_MBUF
 //#define XXX_DUMP_MACTABLE
 //#define XXX_DUMP_RING
 //#define XXX_DUMP_RSSKEY
@@ -294,6 +297,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RX_SYSCONTROL_RESET_DIS		__BIT(29)
 
 #define RX_TCP_RSS_HASH_REG			0x5040
+#define  RX_TCP_RSS_HASH_RPF2			__BITS(19,16)
+#define  RX_TCP_RSS_HASH_TYPE			__BITS(15,0)
 
 /* for RPF_*_REG.ACTION */
 #define RPF_ACTION_DISCARD			0
@@ -1309,6 +1314,10 @@ aq_attach(device_t parent, device_t self, void *aux)
 	}
 	if (error != 0)
 		return;
+
+#ifdef XXX_FORCE_USE_CALLOUT_TICK
+	sc->sc_use_callout = true;
+#endif
 
 	if (sc->sc_use_callout) {
 		callout_init(&sc->sc_tick_ch, 0);	/* XXX: CALLOUT_MPSAFE */
@@ -2731,12 +2740,19 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 	}
 
 	/* misc */
-	if (sc->sc_features & FEATURES_RPF2) {
-		/* XXX: linux:0x000f0000, freebsd:0x00f0001e */
-		AQ_WRITE_REG(sc, RX_TCP_RSS_HASH_REG, 0x000f001e);
-	} else {
+	if (sc->sc_features & FEATURES_RPF2)
+		AQ_WRITE_REG(sc, RX_TCP_RSS_HASH_REG, RX_TCP_RSS_HASH_RPF2);
+	else
 		AQ_WRITE_REG(sc, RX_TCP_RSS_HASH_REG, 0);
-	}
+
+	/*
+	 * XXX: RX_TCP_RSS_HASH_REG:
+	 *  linux  :0x000f0000
+	 *  freebsd:0x000f001e
+	 */
+	/* RSS hash type set for IP/TCP */
+	AQ_WRITE_REG_BIT(sc, RX_TCP_RSS_HASH_REG,
+	    RX_TCP_RSS_HASH_TYPE, 0x001e);
 
 	AQ_WRITE_REG_BIT(sc, RPF_L2BC_REG, RPF_L2BC_EN, 1);
 	AQ_WRITE_REG_BIT(sc, RPF_L2BC_REG, RPF_L2BC_ACTION, RPF_ACTION_HOST);
@@ -2996,7 +3012,7 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 	}
 
 	if (!enable) {
-#if 1
+#ifdef XXX_FORCE_UDP_TO_RING0
 		/*
 		 * HW bug workaround:
 		 * Disable RSS for UDP using rx flow filter 0.
@@ -4115,6 +4131,9 @@ aq_rx_intr(void *arg)
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
 
+#ifdef XXX_RXDESC_EOP_CHECK
+	bool _eop = false;
+#endif
 	m0 = mprev = NULL;
 	for (idx = rxring->ring_readidx, n = 0;
 	    idx != AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR);
@@ -4216,16 +4235,21 @@ aq_rx_intr(void *arg)
 				tcpudp_csumstatus = "TCP/UDP not checked";
 			}
 
-			printf("RXring[%d].desc[%d]\n    type=0x%x, RssHash=0x%08x, status=0x%x, DD=%lu, EOP=%lu, ERR=%lu, pktlen=%u, nextdsc=%u, vlan=%u, sph=%ld, hdrlen=%ld\n",
-			    ringidx, idx, rxd_type, rxd_hash, rxd_status,
+			printf("RXring[%d].desc[%d]\n    pktlen=%u, type=0x%x(sph=%ld, hdrlen=%ld), status=0x%x(DD=%lu, EOP=%lu, ERR=%lu), nextdsc=%u, vlan=%u\n",
+			    ringidx, idx,
+			    rxd_pktlen,
+			    rxd_type,
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN),
+			    rxd_status,
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_DD),
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_EOP),
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_MACERR),
-			    rxd_pktlen, rxd_nextdescptr, rxd_vlan,
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
+			    rxd_nextdescptr,
+			    rxd_vlan);
 
-			printf("    rsstype=0x%lx(%s), pkttype_vlan=%lu/%lu, pkttype_eth=%u(%s), pkttype_proto=%u(%s)\n",
+			printf("    RssHash=0x%08x, rsstype=0x%lx(%s), pkttype_vlan=%lu/%lu, pkttype_eth=%u(%s), pkttype_proto=%u(%s)\n",
+			    rxd_hash,
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
 			    rsstype,
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
@@ -4327,12 +4351,21 @@ aq_rx_intr(void *arg)
 			m0 = mprev = NULL;
 		}
 
+#ifdef XXX_RXDESC_EOP_CHECK
+		_eop = (rxd_status & RXDESC_STATUS_EOP) ? true : false;
+#endif
+
 		/* refill, and update tail */
 		aq_rxring_add(sc, rxring, idx);
  rx_next:
 		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx), idx);
 	}
 	rxring->ring_readidx = idx;
+
+#ifdef XXX_RXDESC_EOP_CHECK
+	if (!_eop)
+		printf("RXring[%d]: no EOP flag exists\n", rxring->ring_index);
+#endif
 
 #ifdef XXX_RXINTR_DEBUG
 	printf("%s:%d: end: readidx=%u, RX_DMA_DESC_HEAD/TAIL=%lu/%u\n", __func__, __LINE__,
@@ -4402,6 +4435,10 @@ aq_init(struct ifnet *ifp)
 		aq_txring_reset(sc, &sc->sc_queue[i].txring, true);
 	}
 	AQ_WRITE_REG_BIT(sc, TPB_TX_BUF_REG, TPB_TX_BUF_EN, 1);
+
+	/* invalidate RX descriptor cache */
+	AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_CACHE_INIT_REG, RX_DMA_DESC_CACHE_INIT,
+	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_CACHE_INIT_REG, RX_DMA_DESC_CACHE_INIT) ^ 1);
 
 	/* start RX */
 	for (i = 0; i < sc->sc_nqueues; i++) {
