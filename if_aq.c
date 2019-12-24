@@ -52,6 +52,7 @@
 //#define XXX_RXINTR_DEBUG
 //#define XXX_RXDESC_DEBUG
 //#define XXX_RXDESC_EOP_CHECK
+//#define XXX_RXRSS_DEBUG
 //#define XXX_DUMP_RX_MBUF
 //#define XXX_TXDESC_DEBUG
 //#define XXX_TXINTR_DEBUG
@@ -4248,10 +4249,9 @@ aq_rx_intr(void *arg)
 			    rxd_nextdescptr,
 			    rxd_vlan);
 
-			printf("    RssHash=0x%08x, rsstype=0x%lx(%s), pkttype_vlan=%lu/%lu, pkttype_eth=%u(%s), pkttype_proto=%u(%s)\n",
+			printf("    rsstype=0x%lx(%s), RssHash=0x%08x, pkttype_vlan=%lu/%lu, pkttype_eth=%u(%s), pkttype_proto=%u(%s)\n",
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE), rsstype,
 			    rxd_hash,
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
-			    rsstype,
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE),
 			    pkttype_eth,
@@ -4268,6 +4268,56 @@ aq_rx_intr(void *arg)
 			printf("    ipv4csumstatus=%s, tcpudp_csumstatus=%s\n", ipv4csumstatus, tcpudp_csumstatus);
 		}
 #endif /* XXX_RXDESC_DEBUG */
+
+#ifdef XXX_RXRSS_DEBUG
+		{
+			const char * const rsstype_tbl[15] = {
+				[RXDESC_TYPE_RSSTYPE_NONE] = "none",
+				[RXDESC_TYPE_RSSTYPE_IPV4] = "ipv4",
+				[RXDESC_TYPE_RSSTYPE_IPV6] = "ipv6",
+				[RXDESC_TYPE_RSSTYPE_IPV4_TCP] = "ipv4-tcp",
+				[RXDESC_TYPE_RSSTYPE_IPV6_TCP] = "ipv6-tcp",
+				[RXDESC_TYPE_RSSTYPE_IPV4_UDP] = "ipv4-udp",
+				[RXDESC_TYPE_RSSTYPE_IPV6_UDP] = "ipv6-udp",
+			};
+			const char * const pkttype_eth_table[4] = {
+				"IPV4",
+				"IPV6",
+				"OTHERS",
+				"ARP"
+			};
+			const char * const pkttype_proto_table[8] = {
+				"TCP",
+				"UDP",
+				"SCTP",
+				"ICMP",
+				"OTHERS",
+				"PKTTYPE_PROTO5", 
+				"PKTTYPE_PROTO6", 
+				"PKTTYPE_PROTO7"
+			};
+
+			const char *rsstype = rsstype_tbl[__SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE) & 15];
+			if (rsstype == NULL)
+				rsstype = "???";
+
+			unsigned int pkttype_proto = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_PROTO);
+			unsigned int pkttype_eth = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_ETHER);
+
+			printf("RXring[%d].desc[%d] rsstype=0x%lx(%s), RssHash=0x%08x, pkttype_vlan=%lu/%lu, pkttype_eth=%u(%s), pkttype_proto=%u(%s)\n",
+			    ringidx, idx,
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE), rsstype,
+			    rxd_hash,
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
+			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE),
+			    pkttype_eth,
+			    pkttype_eth_table[pkttype_eth],
+			    pkttype_proto,
+			    pkttype_proto_table[pkttype_proto]);
+		}
+#endif
+
+
 
 		bus_dmamap_sync(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap, 0,
 		    rxring->ring_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_POSTREAD);
