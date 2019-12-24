@@ -2801,8 +2801,8 @@ aq_hw_interrupt_moderation_set(struct aq_softc *sc)
 		case AQ_LINK_10G:
 			tx_min = 0x4f;
 			tx_max = 0x1ff;
-			rx_min = 0x50;	/* 0x06 */
-			rx_max = 0x78;	/* 0x38 */
+			rx_min = 0x06;	/* freebsd use 80 */
+			rx_max = 0x38;	/* freebsd use 120 */
 			break;
 		}
 
