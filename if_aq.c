@@ -3210,7 +3210,12 @@ aq_update_link_status(struct aq_softc *sc)
 		aq_hw_interrupt_moderation_set(sc);
 	}
 
+	return changed;
+}
 
+static void
+aq_update_statistics(struct aq_softc *sc)
+{
 	if (sc->sc_statistics_enable) {
 		int prev = sc->sc_statistics_idx;
 		int cur = prev ^ 1;
@@ -3250,8 +3255,6 @@ aq_update_link_status(struct aq_softc *sc)
 
 		sc->sc_statistics_idx = cur;
 	}
-
-	return changed;
 }
 
 /* allocate and map one DMA block */
@@ -3622,6 +3625,7 @@ aq_tick(void *arg)
 	struct aq_softc *sc = arg;
 
 	aq_update_link_status(sc);
+	aq_update_statistics(sc);
 
 	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
 }
