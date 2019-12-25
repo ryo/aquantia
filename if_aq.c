@@ -1264,8 +1264,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 	} else if (msixcount >= (sc->sc_nqueues * 2)) {
 		/* TX intrs + RX intrs */
 		sc->sc_use_txrx_independent_intr = true;
-		sc->sc_use_linkstat_intr = true;
-		sc->sc_use_callout = false;
+		sc->sc_use_linkstat_intr = false;
+		sc->sc_use_callout = true;
 		sc->sc_msix = true;
 	} else
 #endif
@@ -1278,8 +1278,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 	} else if (msixcount >= sc->sc_nqueues) {
 		/* TX/RX intrs */
 		sc->sc_use_txrx_independent_intr = false;
-		sc->sc_use_linkstat_intr = true;
-		sc->sc_use_callout = false;
+		sc->sc_use_linkstat_intr = false;
+		sc->sc_use_callout = true;
 		sc->sc_msix = true;
 	} else {
 		/* giving up using MSI-X */
