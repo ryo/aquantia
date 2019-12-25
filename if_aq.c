@@ -46,7 +46,7 @@
 //#define XXX_NO_TXRX_INDEPENDENT
 //#define XXX_NO_MSIX
 //#define XXX_DEBUG_PMAP_EXTRACT
-//#define XXX_FORCE_USE_CALLOUT_TICK
+//#define XXX_FORCE_POLL_LINKSTAT
 //#define XXX_DUMP_STAT
 //#define XXX_INTR_DEBUG
 //#define XXX_RXINTR_DEBUG
@@ -61,6 +61,8 @@
 //#define XXX_DUMP_RING
 //#define XXX_DUMP_RSSKEY
 //#define XXX_DEBUG_RSSKEY_ZERO
+
+#define AQ_EVENT_COUNTERS	/* XXX: opt_if_aq.h */
 
 //
 // terminology
@@ -932,6 +934,38 @@ struct aq_firmware_ops {
 	int (*get_stats)(struct aq_softc *, aq_hw_stats_s_t *);
 };
 
+
+#ifdef AQ_EVENT_COUNTERS
+
+#define AQ_EVCNT_DECL(name)						\
+	char sc_evcount_##name##_name[32];				\
+	struct evcnt sc_evcount_##name##_ev;
+#define AQ_EVCNT_ATTACH(sc, name, desc, evtype)				\
+	do {								\
+		snprintf((sc)->sc_evcount_##name##_name,		\
+		    sizeof((sc)->sc_evcount_##name##_name),		\
+		    "%s", desc);					\
+		evcnt_attach_dynamic(&(sc)->sc_evcount_##name##_ev,	\
+		    (evtype), NULL, device_xname((sc)->sc_dev),		\
+		    (sc)->sc_evcount_##name##_name);			\
+	} while (/*CONSTCOND*/0)
+#define AQ_EVCNT_ATTACH_MISC(sc, name, desc)				\
+	AQ_EVCNT_ATTACH(sc, name, desc, EVCNT_TYPE_MISC)
+
+#define AQ_EVCNT_DETACH(sc, name)					\
+	evcnt_detach(&(sc)->sc_evcount_##name##_ev)
+#define AQ_EVCNT_ADD(sc, name, val)					\
+	((sc)->sc_evcount_##name##_ev.ev_count += (val))
+
+#else /* !AQ_EVENT_COUNTERS */
+
+#define AQ_EVCNT_DECL(name)
+#define AQ_EVCNT_ATTACH(sc, name, desc, xname, evtype)	__nothing
+#define AQ_EVCNT_DETACH(sc, name)			__nothing
+#define AQ_EVCNT_ADD(sc, name, val)			__nothing
+
+#endif /* AQ_EVENT_COUNTERS */
+
 struct aq_softc {
 	device_t sc_dev;
 
@@ -947,8 +981,8 @@ struct aq_softc {
 	int sc_rx_irq[AQ_RSSQUEUE_MAX];
 	int sc_linkstat_irq;
 	bool sc_use_txrx_independent_intr;
-	bool sc_use_linkstat_intr;
-	bool sc_use_callout;
+	bool sc_poll_linkstat;
+
 	callout_t sc_tick_ch;
 
 	int sc_nintrs;
@@ -1007,26 +1041,26 @@ struct aq_softc {
 
 	aq_hw_stats_s_t sc_statistics[2];
 	int sc_statistics_idx;
-	bool sc_statistics_enable;
+	bool sc_statistics_available;
 
-	uint64_t sc_statistics_uprc;
-	uint64_t sc_statistics_mprc;
-	uint64_t sc_statistics_bprc;
-	uint64_t sc_statistics_erpt;
-	uint64_t sc_statistics_uptc;
-	uint64_t sc_statistics_mptc;
-	uint64_t sc_statistics_bptc;
-	uint64_t sc_statistics_erpr;
-	uint64_t sc_statistics_mbtc;
-	uint64_t sc_statistics_bbtc;
-	uint64_t sc_statistics_mbrc;
-	uint64_t sc_statistics_bbrc;
-	uint64_t sc_statistics_ubrc;
-	uint64_t sc_statistics_ubtc;
-	uint64_t sc_statistics_ptc;
-	uint64_t sc_statistics_prc;
-	uint64_t sc_statistics_dpc;
-	uint64_t sc_statistics_cprc;
+	AQ_EVCNT_DECL(uprc);
+	AQ_EVCNT_DECL(mprc);
+	AQ_EVCNT_DECL(bprc);
+	AQ_EVCNT_DECL(erpt);
+	AQ_EVCNT_DECL(uptc);
+	AQ_EVCNT_DECL(mptc);
+	AQ_EVCNT_DECL(bptc);
+	AQ_EVCNT_DECL(erpr);
+	AQ_EVCNT_DECL(mbtc);
+	AQ_EVCNT_DECL(bbtc);
+	AQ_EVCNT_DECL(mbrc);
+	AQ_EVCNT_DECL(bbrc);
+	AQ_EVCNT_DECL(ubrc);
+	AQ_EVCNT_DECL(ubtc);
+	AQ_EVCNT_DECL(ptc);
+	AQ_EVCNT_DECL(prc);
+	AQ_EVCNT_DECL(dpc);
+	AQ_EVCNT_DECL(cprc);
 };
 
 static int aq_match(device_t, cfdata_t, void *);
@@ -1258,28 +1292,24 @@ aq_attach(device_t parent, device_t self, void *aux)
 	if (msixcount >= (sc->sc_nqueues * 2 + 1)) {
 		/* TX intrs + RX intrs + LINKSTAT intrs */
 		sc->sc_use_txrx_independent_intr = true;
-		sc->sc_use_linkstat_intr = true;
-		sc->sc_use_callout = false;
+		sc->sc_poll_linkstat = false;
 		sc->sc_msix = true;
 	} else if (msixcount >= (sc->sc_nqueues * 2)) {
 		/* TX intrs + RX intrs */
 		sc->sc_use_txrx_independent_intr = true;
-		sc->sc_use_linkstat_intr = false;
-		sc->sc_use_callout = true;
+		sc->sc_poll_linkstat = true;
 		sc->sc_msix = true;
 	} else
 #endif
 	if (msixcount >= (sc->sc_nqueues + 1)) {
 		/* TX/RX intrs LINKSTAT intrs */
 		sc->sc_use_txrx_independent_intr = false;
-		sc->sc_use_linkstat_intr = true;
-		sc->sc_use_callout = false;
+		sc->sc_poll_linkstat = false;
 		sc->sc_msix = true;
 	} else if (msixcount >= sc->sc_nqueues) {
 		/* TX/RX intrs */
 		sc->sc_use_txrx_independent_intr = false;
-		sc->sc_use_linkstat_intr = false;
-		sc->sc_use_callout = true;
+		sc->sc_poll_linkstat = true;
 		sc->sc_msix = true;
 	} else {
 		/* giving up using MSI-X */
@@ -1289,22 +1319,22 @@ aq_attach(device_t parent, device_t self, void *aux)
 	aprint_debug_dev(sc->sc_dev, "ncpu=%d, pci_msix_count=%d -> nqueues=%d%s, linkstat_intr=%d\n",
 	    ncpu, msixcount, sc->sc_nqueues,
 	    sc->sc_use_txrx_independent_intr ? "*2" : "",
-	    sc->sc_use_linkstat_intr);
+	    !sc->sc_poll_linkstat);
 
 #ifdef XXX_NO_MSIX
 	sc->sc_msix = false;
 #endif
 
 	if (sc->sc_msix)
-		error = aq_setup_msix(sc, pa, sc->sc_nqueues, sc->sc_use_txrx_independent_intr, sc->sc_use_linkstat_intr);
+		error = aq_setup_msix(sc, pa, sc->sc_nqueues,
+		    sc->sc_use_txrx_independent_intr, !sc->sc_poll_linkstat);
 	else
 		error = ENODEV;
 
 	if (error != 0) {
 		/* if MSI-X failed, fallback to MSI with single queue */
 		sc->sc_use_txrx_independent_intr = false;
-		sc->sc_use_linkstat_intr = false;
-		sc->sc_use_callout = false;
+		sc->sc_poll_linkstat = false;
 		sc->sc_msix = false;
 		sc->sc_nqueues = 1;
 		error = aq_setup_legacy(sc, pa, PCI_INTR_TYPE_MSI);
@@ -1316,14 +1346,11 @@ aq_attach(device_t parent, device_t self, void *aux)
 	if (error != 0)
 		return;
 
-#ifdef XXX_FORCE_USE_CALLOUT_TICK
-	sc->sc_use_callout = true;
+	callout_init(&sc->sc_tick_ch, 0);	/* XXX: CALLOUT_MPSAFE */
+
+#ifdef XXX_FORCE_POLL_LINKSTAT
+	sc->sc_poll_linkstat = true;
 #endif
-
-	if (sc->sc_use_callout) {
-		callout_init(&sc->sc_tick_ch, 0);	/* XXX: CALLOUT_MPSAFE */
-	}
-
 	sc->sc_intr_moderation_enable = CONFIG_INTR_MODERATION_ENABLE;
 
 	if (sc->sc_msix && (sc->sc_nqueues > 1))
@@ -1434,12 +1461,27 @@ aq_attach(device_t parent, device_t self, void *aux)
 	/* get starting statistics values */
 	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_stats != NULL &&
 	    sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[0]) == 0) {
-		sc->sc_statistics_enable = true;
+		sc->sc_statistics_available = true;
 	}
 
-	if (sc->sc_use_callout) {
-		callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
-	}
+	AQ_EVCNT_ATTACH_MISC(sc, uprc, "RX unicast packet");
+	AQ_EVCNT_ATTACH_MISC(sc, bprc, "RX broadcast packet");
+	AQ_EVCNT_ATTACH_MISC(sc, mprc, "RX multicast packet");
+	AQ_EVCNT_ATTACH_MISC(sc, erpr, "RX error packet");
+	AQ_EVCNT_ATTACH_MISC(sc, ubrc, "RX unicast bytes");
+	AQ_EVCNT_ATTACH_MISC(sc, bbrc, "RX broadcast bytes");
+	AQ_EVCNT_ATTACH_MISC(sc, mbrc, "RX multicast bytes");
+	AQ_EVCNT_ATTACH_MISC(sc, prc, "RX good packet");
+	AQ_EVCNT_ATTACH_MISC(sc, uptc, "TX unicast packet");
+	AQ_EVCNT_ATTACH_MISC(sc, bptc, "TX broadcast packet");
+	AQ_EVCNT_ATTACH_MISC(sc, mptc, "TX multicast packet");
+	AQ_EVCNT_ATTACH_MISC(sc, erpt, "TX error packet");
+	AQ_EVCNT_ATTACH_MISC(sc, ubtc, "TX unicast bytes");
+	AQ_EVCNT_ATTACH_MISC(sc, bbtc, "TX broadcast bytes");
+	AQ_EVCNT_ATTACH_MISC(sc, mbtc, "TX multicast bytes");
+	AQ_EVCNT_ATTACH_MISC(sc, ptc, "TX good packet");
+	AQ_EVCNT_ATTACH_MISC(sc, dpc, "DMA drop packet");
+	AQ_EVCNT_ATTACH_MISC(sc, cprc, "RX coalesced packet");
 
 	return;
 
@@ -1485,9 +1527,27 @@ aq_detach(device_t self, int flags __unused)
 		sc->sc_iosize = 0;
 	}
 
-	if (sc->sc_use_callout) {
-		callout_stop(&sc->sc_tick_ch);
-	}
+	callout_stop(&sc->sc_tick_ch);
+
+	AQ_EVCNT_DETACH(sc, uprc);
+	AQ_EVCNT_DETACH(sc, mprc);
+	AQ_EVCNT_DETACH(sc, bprc);
+	AQ_EVCNT_DETACH(sc, erpt);
+	AQ_EVCNT_DETACH(sc, uptc);
+	AQ_EVCNT_DETACH(sc, mptc);
+	AQ_EVCNT_DETACH(sc, bptc);
+	AQ_EVCNT_DETACH(sc, erpr);
+	AQ_EVCNT_DETACH(sc, mbtc);
+	AQ_EVCNT_DETACH(sc, bbtc);
+	AQ_EVCNT_DETACH(sc, mbrc);
+	AQ_EVCNT_DETACH(sc, bbrc);
+	AQ_EVCNT_DETACH(sc, ubrc);
+	AQ_EVCNT_DETACH(sc, ubtc);
+	AQ_EVCNT_DETACH(sc, ptc);
+	AQ_EVCNT_DETACH(sc, prc);
+	AQ_EVCNT_DETACH(sc, dpc);
+	AQ_EVCNT_DETACH(sc, cprc);
+
 	mutex_destroy(&sc->sc_mutex);
 
 	return 0;
@@ -3216,42 +3276,44 @@ aq_update_link_status(struct aq_softc *sc)
 static void
 aq_update_statistics(struct aq_softc *sc)
 {
-	if (sc->sc_statistics_enable) {
+	if (sc->sc_statistics_available) {
 		int prev = sc->sc_statistics_idx;
 		int cur = prev ^ 1;
 
 		sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[cur]);
 
-#define ADD_DELTA(cur,prev,name,descr)	\
-		do {															\
-			uint64_t n = (uint32_t)(sc->sc_statistics[cur].name - sc->sc_statistics[prev].name);				\
-			/* printf("# %s: %s: %u\n", descr, #name, sc->sc_statistics[cur].name); */					\
-			if (n != 0) {													\
-				device_printf(sc->sc_dev, "STAT: %s: %s: %lu -> %lu (+%lu)\n", descr, #name, sc->sc_statistics_ ## name, sc->sc_statistics_ ## name + n, n);	\
-			}														\
-			sc->sc_statistics_ ## name += n;										\
+		/*
+		 * aq's internal statistics counter is 32bit.
+		 * cauculate delta, and add to evcount
+		 */
+#define ADD_DELTA(cur, prev, name)					\
+		do {							\
+			uint32_t n;					\
+			n = (uint32_t)(sc->sc_statistics[cur].name -	\
+			    sc->sc_statistics[prev].name);		\
+			if (n != 0) {					\
+				AQ_EVCNT_ADD(sc, name, n);		\
+			}						\
 		} while (/*CONSTCOND*/0);
 
-#ifdef XXX_DUMP_STAT
-		ADD_DELTA(cur, prev, uprc, "RX ucast");
-		ADD_DELTA(cur, prev, mprc, "RX mcast");
-		ADD_DELTA(cur, prev, bprc, "RX bcast");
-		ADD_DELTA(cur, prev, prc,  "RX good");
-		ADD_DELTA(cur, prev, erpr, "RX error");
-		ADD_DELTA(cur, prev, uptc, "TX ucast");
-		ADD_DELTA(cur, prev, mptc, "TX mcast");
-		ADD_DELTA(cur, prev, bptc, "TX bcast");
-		ADD_DELTA(cur, prev, ptc,  "TX good");
-		ADD_DELTA(cur, prev, erpt, "TX error");
-		ADD_DELTA(cur, prev, mbtc, "TX mcast bytes");
-		ADD_DELTA(cur, prev, bbtc, "TX bcast bytes");
-		ADD_DELTA(cur, prev, mbrc, "RX mcast bytes");
-		ADD_DELTA(cur, prev, bbrc, "RX bcast bytes");
-		ADD_DELTA(cur, prev, ubrc, "RX ucast bytes");
-		ADD_DELTA(cur, prev, ubtc, "TX ucast bytes");
-		ADD_DELTA(cur, prev, dpc,  "DMA drop");
-		ADD_DELTA(cur, prev, cprc, "RX coalesced");
-#endif
+		ADD_DELTA(cur, prev, uprc);
+		ADD_DELTA(cur, prev, mprc);
+		ADD_DELTA(cur, prev, bprc);
+		ADD_DELTA(cur, prev, prc);
+		ADD_DELTA(cur, prev, erpr);
+		ADD_DELTA(cur, prev, uptc);
+		ADD_DELTA(cur, prev, mptc);
+		ADD_DELTA(cur, prev, bptc);
+		ADD_DELTA(cur, prev, ptc);
+		ADD_DELTA(cur, prev, erpt);
+		ADD_DELTA(cur, prev, mbtc);
+		ADD_DELTA(cur, prev, bbtc);
+		ADD_DELTA(cur, prev, mbrc);
+		ADD_DELTA(cur, prev, bbrc);
+		ADD_DELTA(cur, prev, ubrc);
+		ADD_DELTA(cur, prev, ubtc);
+		ADD_DELTA(cur, prev, dpc);
+		ADD_DELTA(cur, prev, cprc);
 
 		sc->sc_statistics_idx = cur;
 	}
@@ -3624,8 +3686,11 @@ aq_tick(void *arg)
 {
 	struct aq_softc *sc = arg;
 
-	aq_update_link_status(sc);
-	aq_update_statistics(sc);
+	if (sc->sc_poll_linkstat)
+		aq_update_link_status(sc);
+
+	if (sc->sc_statistics_available)
+		aq_update_statistics(sc);
 
 	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
 }
@@ -4512,8 +4577,8 @@ aq_init(struct ifnet *ifp)
 
 	aq_enable_intr(sc, true, true);
 
-	if (sc->sc_use_callout) {
-		/* for resume */
+	/* need to start callout? */
+	if (sc->sc_poll_linkstat || sc->sc_statistics_available) {
 		callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
 	}
 
@@ -4619,9 +4684,7 @@ aq_stop(struct ifnet *ifp, int disable)
 	if (!disable) {
 		/* when pmf stop, disable link status intr, and callout */
 		aq_enable_intr(sc, false, false);
-		if (sc->sc_use_callout) {
-			callout_stop(&sc->sc_tick_ch);
-		}
+		callout_stop(&sc->sc_tick_ch);
 	}
 
 	ifp->if_flags &= ~(IFF_RUNNING | IFF_OACTIVE);
