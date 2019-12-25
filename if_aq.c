@@ -4540,7 +4540,7 @@ aq_start(struct ifnet *ifp)
 
 	sc = ifp->if_softc;
 
-	txring = &sc->sc_queue[0].txring;	// XXX: select TX ring[0]
+	txring = &sc->sc_queue[0].txring;	/* XXX: always use TX ring[0] */
 
 #ifdef XXX_TXDESC_DEBUG
 	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u, INTR_MASK/INTR_STATUS=%08x/%08x\n",
