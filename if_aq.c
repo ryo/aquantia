@@ -41,7 +41,7 @@
 //
 //
 
-#define XXX_FORCE_32BIT_PA
+//#define XXX_FORCE_32BIT_PA
 //#define XXX_FORCE_UDP_TO_RING0
 //#define XXX_NO_TXRX_INDEPENDENT
 //#define XXX_NO_MSIX
