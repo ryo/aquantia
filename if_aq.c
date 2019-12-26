@@ -23,12 +23,11 @@
 //
 //
 // TODO
-//	rss (+取りこぼし問題?)
-//	msix
 //	lock
+//	vlan hw filter
 //
 //	hardware offloading (LRO,TSO,RX-L4CSUM problem)
-//	ifp counters, evcnt
+//	ifp counters
 //	cleanup source
 //	fulldup control? (100baseTX)
 //	IP header offset 4n+2問題
@@ -38,6 +37,9 @@
 // DONE
 //	interrupt moderation
 //	vlan
+//	rss
+//	msix
+//	evcnt
 //
 //
 
