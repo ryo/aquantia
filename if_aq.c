@@ -64,7 +64,6 @@
 //#define XXX_DUMP_RSSKEY
 //#define XXX_DEBUG_RSSKEY_ZERO
 
-#define AQ_EVENT_COUNTERS	/* XXX: opt_if_aq.h */
 
 //
 // terminology
@@ -143,6 +142,11 @@
 
 #include <sys/cdefs.h>
 __KERNEL_RCSID(0, "$NetBSD$");
+
+#ifdef _KERNEL_OPT
+#include "opt_net_mpsafe.h"
+#include "opt_if_aq.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/types.h>
