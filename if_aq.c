@@ -1436,8 +1436,16 @@ aq_attach(device_t parent, device_t self, void *aux)
 	// TSO
 	ifp->if_capabilities |= IFCAP_TSOv4 | IFCAP_TSOv6;
 #endif
+
 #if notyet
-	// XXX: RX L4 CSUM doesn't work for fragment packet... RX L4 CSUM is requied for LRO?
+	/*
+	 * XXX:
+	 *   Rx L4 CSUM doesn't work well for fragment packet.
+	 *   aq marks 'CHEDKED' and 'BAD' for them.
+	 *   we need to ignore (clear) hw-csum flags if the packet is fragmented.
+	 *
+	 *   TODO: test with LRO enabled
+	 */
 	ifp->if_capabilities |= IFCAP_CSUM_TCPv4_Rx | IFCAP_CSUM_TCPv6_Rx;
 	ifp->if_capabilities |= IFCAP_CSUM_UDPv4_Rx | IFCAP_CSUM_UDPv6_Rx;
 #endif
