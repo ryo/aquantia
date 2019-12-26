@@ -131,7 +131,6 @@
 __KERNEL_RCSID(0, "$NetBSD$");
 
 #ifdef _KERNEL_OPT
-#include "opt_net_mpsafe.h"
 #include "opt_if_aq.h"
 #endif
 
@@ -344,6 +343,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_VLAN_TPID_INNER			__BITS(15,0)
 
 /* RPF_VLAN_FILTER_REG[16] 0x5290-0x52d0 */
+#define RPF_VLAN_MAX_FILTERS			16
 #define RPF_VLAN_FILTER_REG(i)			(0x5290 + (i) * 4)
 #define  RPF_VLAN_FILTER_EN			__BIT(31)
 #define  RPF_VLAN_FILTER_RXQ_EN			__BIT(28)
@@ -1340,7 +1340,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	if (error != 0)
 		return;
 
-	callout_init(&sc->sc_tick_ch, 0);	/* XXX: CALLOUT_MPSAFE */
+	callout_init(&sc->sc_tick_ch, 0);
 
 #ifdef XXX_FORCE_POLL_LINKSTAT
 	sc->sc_poll_linkstat = true;
@@ -3096,63 +3096,17 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 	}
 }
 
-struct aq_rx_filter_vlan {
-	uint8_t enable;
-	uint8_t location;
-	uint16_t vlan_id;
-	uint8_t queue;
-};
-
 static void
 aq_update_vlan_filters(struct aq_softc *sc)
 {
-#define VLAN_MAX_FILTERS		16
-//	struct aq_rx_filter_vlan aq_vlans[AQ_HW_VLAN_MAX_FILTERS];
-//	int bit_pos = 0;
-//	int vlan_tag = -1;
+	/* XXX: notyet. always promisc */
 	int i;
 
-	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_REG, RPF_VLAN_MODE_PROMISC, 1);
-#if 0
-XXX: notyet
-	for (i = 0; i < AQ_HW_VLAN_MAX_FILTERS; i++) {
-		bit_ffs_at(softc->vlan_tags, bit_pos, 4096, &vlan_tag);
-		if (vlan_tag != -1) {
-			aq_vlans[i].enable = true;
-			aq_vlans[i].location = i;
-			aq_vlans[i].queue = 0xFF;
-			aq_vlans[i].vlan_id = vlan_tag;
-			bit_pos = vlan_tag;
-		} else {
-			aq_vlans[i].enable = false;
-		}
-	}
-#endif
-
-	for (i = 0; i < VLAN_MAX_FILTERS; i++) {
+	for (i = 0; i < RPF_VLAN_MAX_FILTERS; i++) {
 		AQ_WRITE_REG_BIT(sc, RPF_VLAN_FILTER_REG(i), RPF_VLAN_FILTER_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RPF_VLAN_FILTER_REG(i), RPF_VLAN_FILTER_RXQ_EN, 0);
-
-#if 0
-XXX: notyet
-		if (aq_vlans[i].enable) {
-			hw_atl_rpf_vlan_id_flr_set(self,
-						   aq_vlans[i].vlan_id,
-						   i);
-			hw_atl_rpf_vlan_flr_act_set(self, 1U, i);
-			hw_atl_rpf_vlan_flr_en_set(self, 1U, i);
-			if (aq_vlans[i].queue != 0xFF) {
-				hw_atl_rpf_vlan_rxq_flr_set(self,
-							    aq_vlans[i].queue,
-							    i);
-				hw_atl_rpf_vlan_rxq_en_flr_set(self, 1U, i);
-			}
-		}
-#endif
 	}
-
-//	hw_atl_b0_hw_vlan_promisc_set(hw, aq_is_vlan_promisc_required(softc));
-
+	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_REG, RPF_VLAN_MODE_PROMISC, 1);
 }
 
 static int
