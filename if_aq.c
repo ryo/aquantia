@@ -64,19 +64,6 @@
 //#define XXX_DUMP_RSSKEY
 //#define XXX_DEBUG_RSSKEY_ZERO
 
-
-//
-// terminology
-//
-//	MPI = MAC PHY INTERFACE?
-//	RPO = RX Protocol Offloading
-//	TPO = TX Protocol Offloading
-//	RPF = RX Packet Filter
-//	TPB = TX Packet buffer
-//	RPB = RX Packet buffer
-//
-
-
 /*	$NetBSD$	*/
 
 /**
@@ -205,6 +192,16 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_TRAFFICCLASS_NUM		8
 #define AQ_RSS_HASHKEY_SIZE		40
 #define AQ_RSS_INDIRECTION_TABLE_MAX	64
+
+/*
+ * TERMINOLOGY
+ *	MPI = MAC PHY INTERFACE?
+ *	RPO = RX Protocol Offloading
+ *	TPO = TX Protocol Offloading
+ *	RPF = RX Packet Filter
+ *	TPB = TX Packet buffer
+ *	RPB = RX Packet buffer
+ */
 
 /* registers */
 #define AQ_FW_SOFTRESET_REG			0x0000
@@ -940,9 +937,7 @@ struct aq_firmware_ops {
 	int (*get_stats)(struct aq_softc *, aq_hw_stats_s_t *);
 };
 
-
 #ifdef AQ_EVENT_COUNTERS
-
 #define AQ_EVCNT_DECL(name)						\
 	char sc_evcount_##name##_name[32];				\
 	struct evcnt sc_evcount_##name##_ev;
@@ -957,19 +952,10 @@ struct aq_firmware_ops {
 	} while (/*CONSTCOND*/0)
 #define AQ_EVCNT_ATTACH_MISC(sc, name, desc)				\
 	AQ_EVCNT_ATTACH(sc, name, desc, EVCNT_TYPE_MISC)
-
 #define AQ_EVCNT_DETACH(sc, name)					\
 	evcnt_detach(&(sc)->sc_evcount_##name##_ev)
 #define AQ_EVCNT_ADD(sc, name, val)					\
 	((sc)->sc_evcount_##name##_ev.ev_count += (val))
-
-#else /* !AQ_EVENT_COUNTERS */
-
-#define AQ_EVCNT_DECL(name)
-#define AQ_EVCNT_ATTACH(sc, name, desc, xname, evtype)	__nothing
-#define AQ_EVCNT_DETACH(sc, name)			__nothing
-#define AQ_EVCNT_ADD(sc, name, val)			__nothing
-
 #endif /* AQ_EVENT_COUNTERS */
 
 struct aq_softc {
@@ -1045,9 +1031,10 @@ struct aq_softc {
 	int sc_ec_capenable;		/* last ec_capenable */
 	unsigned short sc_if_flags;	/* last if_flags */
 
+#ifdef AQ_EVENT_COUNTERS
 	aq_hw_stats_s_t sc_statistics[2];
 	int sc_statistics_idx;
-	bool sc_statistics_available;
+	bool sc_poll_statistics;
 
 	AQ_EVCNT_DECL(uprc);
 	AQ_EVCNT_DECL(mprc);
@@ -1067,6 +1054,7 @@ struct aq_softc {
 	AQ_EVCNT_DECL(prc);
 	AQ_EVCNT_DECL(dpc);
 	AQ_EVCNT_DECL(cprc);
+#endif
 };
 
 static int aq_match(device_t, cfdata_t, void *);
@@ -1472,10 +1460,11 @@ aq_attach(device_t parent, device_t self, void *aux)
 	/* media update */
 	aq_mediachange(ifp);
 
+#ifdef AQ_EVENT_COUNTERS
 	/* get starting statistics values */
 	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_stats != NULL &&
 	    sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[0]) == 0) {
-		sc->sc_statistics_available = true;
+		sc->sc_poll_statistics = true;
 	}
 
 	AQ_EVCNT_ATTACH_MISC(sc, uprc, "RX unicast packet");
@@ -1496,6 +1485,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	AQ_EVCNT_ATTACH_MISC(sc, ptc, "TX good packet");
 	AQ_EVCNT_ATTACH_MISC(sc, dpc, "DMA drop packet");
 	AQ_EVCNT_ATTACH_MISC(sc, cprc, "RX coalesced packet");
+#endif
 
 	return;
 
@@ -1543,6 +1533,7 @@ aq_detach(device_t self, int flags __unused)
 
 	callout_stop(&sc->sc_tick_ch);
 
+#ifdef AQ_EVENT_COUNTERS
 	AQ_EVCNT_DETACH(sc, uprc);
 	AQ_EVCNT_DETACH(sc, mprc);
 	AQ_EVCNT_DETACH(sc, bprc);
@@ -1561,6 +1552,7 @@ aq_detach(device_t self, int flags __unused)
 	AQ_EVCNT_DETACH(sc, prc);
 	AQ_EVCNT_DETACH(sc, dpc);
 	AQ_EVCNT_DETACH(sc, cprc);
+#endif
 
 	mutex_destroy(&sc->sc_mutex);
 
@@ -3287,51 +3279,51 @@ aq_update_link_status(struct aq_softc *sc)
 	return changed;
 }
 
+#ifdef AQ_EVENT_COUNTERS
 static void
 aq_update_statistics(struct aq_softc *sc)
 {
-	if (sc->sc_statistics_available) {
-		int prev = sc->sc_statistics_idx;
-		int cur = prev ^ 1;
+	int prev = sc->sc_statistics_idx;
+	int cur = prev ^ 1;
 
-		sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[cur]);
+	sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[cur]);
 
-		/*
-		 * aq's internal statistics counter is 32bit.
-		 * cauculate delta, and add to evcount
-		 */
-#define ADD_DELTA(cur, prev, name)					\
-		do {							\
-			uint32_t n;					\
-			n = (uint32_t)(sc->sc_statistics[cur].name -	\
-			    sc->sc_statistics[prev].name);		\
-			if (n != 0) {					\
-				AQ_EVCNT_ADD(sc, name, n);		\
-			}						\
-		} while (/*CONSTCOND*/0);
+	/*
+	 * aq's internal statistics counter is 32bit.
+	 * cauculate delta, and add to evcount
+	 */
+#define ADD_DELTA(cur, prev, name)				\
+	do {							\
+		uint32_t n;					\
+		n = (uint32_t)(sc->sc_statistics[cur].name -	\
+		    sc->sc_statistics[prev].name);		\
+		if (n != 0) {					\
+			AQ_EVCNT_ADD(sc, name, n);		\
+		}						\
+	} while (/*CONSTCOND*/0);
 
-		ADD_DELTA(cur, prev, uprc);
-		ADD_DELTA(cur, prev, mprc);
-		ADD_DELTA(cur, prev, bprc);
-		ADD_DELTA(cur, prev, prc);
-		ADD_DELTA(cur, prev, erpr);
-		ADD_DELTA(cur, prev, uptc);
-		ADD_DELTA(cur, prev, mptc);
-		ADD_DELTA(cur, prev, bptc);
-		ADD_DELTA(cur, prev, ptc);
-		ADD_DELTA(cur, prev, erpt);
-		ADD_DELTA(cur, prev, mbtc);
-		ADD_DELTA(cur, prev, bbtc);
-		ADD_DELTA(cur, prev, mbrc);
-		ADD_DELTA(cur, prev, bbrc);
-		ADD_DELTA(cur, prev, ubrc);
-		ADD_DELTA(cur, prev, ubtc);
-		ADD_DELTA(cur, prev, dpc);
-		ADD_DELTA(cur, prev, cprc);
+	ADD_DELTA(cur, prev, uprc);
+	ADD_DELTA(cur, prev, mprc);
+	ADD_DELTA(cur, prev, bprc);
+	ADD_DELTA(cur, prev, prc);
+	ADD_DELTA(cur, prev, erpr);
+	ADD_DELTA(cur, prev, uptc);
+	ADD_DELTA(cur, prev, mptc);
+	ADD_DELTA(cur, prev, bptc);
+	ADD_DELTA(cur, prev, ptc);
+	ADD_DELTA(cur, prev, erpt);
+	ADD_DELTA(cur, prev, mbtc);
+	ADD_DELTA(cur, prev, bbtc);
+	ADD_DELTA(cur, prev, mbrc);
+	ADD_DELTA(cur, prev, bbrc);
+	ADD_DELTA(cur, prev, ubrc);
+	ADD_DELTA(cur, prev, ubtc);
+	ADD_DELTA(cur, prev, dpc);
+	ADD_DELTA(cur, prev, cprc);
 
-		sc->sc_statistics_idx = cur;
-	}
+	sc->sc_statistics_idx = cur;
 }
+#endif /* AQ_EVENT_COUNTERS */
 
 /* allocate and map one DMA block */
 static int
@@ -3703,8 +3695,10 @@ aq_tick(void *arg)
 	if (sc->sc_poll_linkstat)
 		aq_update_link_status(sc);
 
-	if (sc->sc_statistics_available)
+#ifdef AQ_EVENT_COUNTERS
+	if (sc->sc_poll_statistics)
 		aq_update_statistics(sc);
+#endif
 
 	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
 }
@@ -4592,7 +4586,11 @@ aq_init(struct ifnet *ifp)
 	aq_enable_intr(sc, true, true);
 
 	/* need to start callout? */
-	if (sc->sc_poll_linkstat || sc->sc_statistics_available) {
+	if (sc->sc_poll_linkstat
+#ifdef AQ_EVENT_COUNTERS
+	    || sc->sc_poll_statistics
+#endif
+	    ) {
 		callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
 	}
 
