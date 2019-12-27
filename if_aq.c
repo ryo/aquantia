@@ -3796,8 +3796,9 @@ aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 		AQ_WRITE_REG_BIT(sc, TX_DMA_DESC_REG(ringidx), TX_DMA_DESC_LEN,
 		    AQ_TXD_NUM / 8);
 
-		/* reset TAIL pointer */
-		AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(ringidx), 0);
+		/* reload TAIL pointer */
+		txring->txr_prodidx = txring->txr_considx =
+		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(ringidx));
 		AQ_WRITE_REG(sc, TX_DMA_DESC_WRWB_THRESH_REG(ringidx), 0);
 
 		/* Mapping interrupt vector */
