@@ -175,8 +175,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define AQ_NINTR_MAX			(AQ_RSSQUEUE_MAX + AQ_RSSQUEUE_MAX + 1)
 					/* TX + RX + LINK. must be <= 32 */
+#if 1
 #define AQ_TXD_NUM			2048	/* per ring. 8*n && <= 8184 */
 #define AQ_RXD_NUM			2048	/* per ring. 8*n && <= 8184 */
+#else
+/* stress debug */
+#define AQ_TXD_NUM			8	/* per ring. 8*n && <= 8184 */
+#define AQ_RXD_NUM			8	/* per ring. 8*n && <= 8184 */
+#endif
 
 /* hardware specification */
 #define AQ_RINGS_NUM			32
@@ -1422,7 +1428,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	ifp->if_capenable |= IFCAP_LRO;
 #endif
 #if notyet
-	// TSO
+	/* TSO */
 	ifp->if_capabilities |= IFCAP_TSOv4 | IFCAP_TSOv6;
 #endif
 
@@ -3133,15 +3139,9 @@ aq_hw_init(struct aq_softc *sc)
 	else
 		irqmode =  AQ_INTR_CTRL_IRQMODE_MSI;
 
-#if 0
-	AQ_WRITE_REG(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_RESET_DIS);
-//	AQ_WRITE_REG(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_RESET_DIS | AQ_INTR_CTRL_CLR_ON_READ);
-	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_IRQMODE, irqmode);
-#else
 	AQ_WRITE_REG(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_RESET_DIS);
 	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_MULTIVEC, sc->sc_msix ? 1 : 0);
 	AQ_WRITE_REG_BIT(sc, AQ_INTR_CTRL_REG, AQ_INTR_CTRL_IRQMODE, irqmode);
-#endif
 
 	AQ_WRITE_REG(sc, AQ_INTR_AUTOMASK_REG, 0xffffffff);
 
@@ -4028,21 +4028,21 @@ aq_tx_intr(void *arg)
 #endif
 
 #if 0
-		//DEBUG. show done txdesc
+		/* DEBUG: show done txdesc */
 		bus_dmamap_sync(sc->sc_dmat, txring->txr_txdesc_dmamap,
 		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
 		    BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE);
 		printf("%s:%d: written txdesc[%3d] buf_addr=%012lx, ctl=%08x ctl2=%08x\n", __func__, __LINE__,
 		    idx,
 		    txring->txr_txdesc[idx].buf_addr,
-		    txring->txr_txdesc[idx].ctl,
+		    txring->txr_txdesc[idx].ctl1,
 		    txring->txr_txdesc[idx].ctl2);
 #endif
 
 #if 0
-		//DEBUG? clear done txdesc
+		/* DEBUG: clear done txdesc */
 		txring->txr_txdesc[idx].buf_addr = 0;
-		txring->txr_txdesc[idx].ctl = AQ_TXDESC_CTL1_DD;
+		txring->txr_txdesc[idx].ctl1 = AQ_TXDESC_CTL1_DD;
 		txring->txr_txdesc[idx].ctl2 = 0;
 		bus_dmamap_sync(sc->sc_dmat, txring->txr_txdesc_dmamap,
 		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
