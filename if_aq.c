@@ -3884,7 +3884,7 @@ static int
 aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 {
 	bus_dmamap_t map;
-	struct mbuf * const m = *mp;
+	struct mbuf *m = *mp;
 	uint32_t ctl1, ctl1_ctx, ctl2;
 	int idx, i, error;
 
@@ -3892,9 +3892,18 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	map = txring->txr_mbufs[idx].dmamap;
 
 	error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
-	    BUS_DMA_NOWAIT);
+	    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
+	if (error == EFBIG) {
+		m = m_defrag(m, M_DONTWAIT);
+		if (m != NULL) {
+			*mp = m;
+			error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
+			    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
+		}
+	}
+
+
 	if (error != 0) {
-		/* XXX: TODO: try to m_defrag */
 		device_printf(sc->sc_dev,
 		    "Error mapping mbuf into TX chain: error=%d\n", error);
 		m_freem(m);
