@@ -3531,7 +3531,7 @@ aq_rxring_add(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
 
 	m->m_len = m->m_pkthdr.len = m->m_ext.ext_size;
 	error = bus_dmamap_load_mbuf(sc->sc_dmat, rxring->rxr_mbufs[idx].dmamap,
-	    m, BUS_DMA_NOWAIT);
+	    m, BUS_DMA_READ | BUS_DMA_NOWAIT);
 	if (error) {
 		device_printf(sc->sc_dev,
 		    "unable to load rx DMA map %d, error = %d\n", idx, error);
@@ -3923,8 +3923,9 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 		return ENOBUFS;
 	}
 
+	/* sync dma for mbuf */
 	bus_dmamap_sync(sc->sc_dmat, map, 0, map->dm_mapsize,
-	    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
+	    BUS_DMASYNC_PREWRITE);
 
 	ctl1_ctx = 0;
 	ctl2 = __SHIFTIN(m->m_pkthdr.len, AQ_TXDESC_CTL2_LEN);
