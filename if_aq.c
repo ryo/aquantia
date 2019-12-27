@@ -4397,7 +4397,10 @@ aq_rx_intr(void *arg)
 					m0->m_pkthdr.csum_flags |= M_CSUM_IPv4_BAD;
 			}
 #if notyet
-			//XXX: NIC always marks BAD for fragmented packet? need to care.
+			/*
+			 * XXX: aq always marks BAD for fragmented packet...
+			 * we should peek L3 header, and ignore cksum flags if the packet is fragmented...
+			 */
 			if (__SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED)) {
 				bool checked = false;
 				unsigned int pkttype_proto = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_PROTO);
