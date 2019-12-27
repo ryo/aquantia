@@ -3483,33 +3483,10 @@ aq_rxring_free(struct aq_softc *sc, struct aq_rxring *rxring)
 	    &rxring->rxr_rxdesc_dmamap, rxring->rxr_rxdesc_seg);
 }
 
-static inline void
-aq_rxring_reset_desc(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
+static void
+aq_rxring_setmbuf(struct aq_softc *sc, struct aq_rxring *rxring, int idx, struct mbuf *m)
 {
-	/* refill rxdesc, and sync */
-	rxring->rxr_rxdesc[idx].read.buf_addr = htole64(rxring->rxr_mbufs[idx].dmamap->dm_segs[0].ds_addr);
-	rxring->rxr_rxdesc[idx].read.hdr_addr = 0;
-	bus_dmamap_sync(sc->sc_dmat, rxring->rxr_rxdesc_dmamap,
-	    sizeof(aq_rx_desc_t) * idx, sizeof(aq_rx_desc_t),
-	    BUS_DMASYNC_PREWRITE);
-}
-
-/* allocate mbuf and unload dmamap */
-static int
-aq_rxring_add(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
-{
-	struct mbuf *m;
 	int error;
-
-	MGETHDR(m, M_DONTWAIT, MT_DATA);
-	if (m == NULL)
-		return ENOBUFS;
-
-	MCLGET(m, M_DONTWAIT);
-	if ((m->m_flags & M_EXT) == 0) {
-		m_freem(m);
-		return ENOBUFS;
-	}
 
 	/* if mbuf already exists, unload and free */
 	if (rxring->rxr_mbufs[idx].m != NULL) {
@@ -3530,8 +3507,48 @@ aq_rxring_add(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
 	}
 	bus_dmamap_sync(sc->sc_dmat, rxring->rxr_mbufs[idx].dmamap, 0,
 	    rxring->rxr_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_PREREAD);
-	aq_rxring_reset_desc(sc, rxring, idx);
+}
 
+static inline void
+aq_rxring_reset_desc(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
+{
+	/* refill rxdesc, and sync */
+	rxring->rxr_rxdesc[idx].read.buf_addr = htole64(rxring->rxr_mbufs[idx].dmamap->dm_segs[0].ds_addr);
+	rxring->rxr_rxdesc[idx].read.hdr_addr = 0;
+	bus_dmamap_sync(sc->sc_dmat, rxring->rxr_rxdesc_dmamap,
+	    sizeof(aq_rx_desc_t) * idx, sizeof(aq_rx_desc_t),
+	    BUS_DMASYNC_PREWRITE);
+}
+
+static struct mbuf *
+aq_alloc_mbuf(void)
+{
+	struct mbuf *m;
+
+	MGETHDR(m, M_DONTWAIT, MT_DATA);
+	if (m == NULL)
+		return NULL;
+
+	MCLGET(m, M_DONTWAIT);
+	if ((m->m_flags & M_EXT) == 0) {
+		m_freem(m);
+		return NULL;
+	}
+
+	return m;
+}
+
+/* allocate mbuf and unload dmamap */
+static int
+aq_rxring_add(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
+{
+	struct mbuf *m;
+
+	m = aq_alloc_mbuf();
+	if (m == NULL)
+		return ENOBUFS;
+
+	aq_rxring_setmbuf(sc, rxring, idx, m);
 	return 0;
 }
 
@@ -3831,6 +3848,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 				aq_rxdrain(sc, rxring);
 				return error;
 			}
+			aq_rxring_reset_desc(sc, rxring, i);
 		}
 
 		/* RX descriptor physical address */
@@ -4099,7 +4117,7 @@ aq_rx_intr(void *arg)
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
 	const int ringidx = rxring->rxr_index;
 	aq_rx_desc_t *rxd;
-	struct mbuf *m, *m0, *mprev;
+	struct mbuf *m, *m0, *mprev, *new_m;
 	uint32_t rxd_type, rxd_hash __unused;
 	uint16_t rxd_status, rxd_pktlen, rxd_nextdescptr __unused, rxd_vlan __unused;
 	unsigned int idx, n = 0;
@@ -4165,7 +4183,6 @@ aq_rx_intr(void *arg)
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
-			aq_rxring_reset_desc(sc, rxring, idx);
 			goto rx_next;
 		}
 
@@ -4316,9 +4333,18 @@ aq_rx_intr(void *arg)
 
 		bus_dmamap_sync(sc->sc_dmat, rxring->rxr_mbufs[idx].dmamap, 0,
 		    rxring->rxr_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_POSTREAD);
-
 		m = rxring->rxr_mbufs[idx].m;
+
+		new_m = aq_alloc_mbuf();
+		if (new_m == NULL) {
+			/*
+			 * cannot allocate new mbuf.
+			 * discard this packet, and reuse mbuf for next.
+			 */
+			goto rx_next;
+		}
 		rxring->rxr_mbufs[idx].m = NULL;
+		aq_rxring_setmbuf(sc, rxring, idx, new_m);
 
 		if (m0 == NULL) {
 			m0 = m;
@@ -4397,9 +4423,8 @@ aq_rx_intr(void *arg)
 			m0 = mprev = NULL;
 		}
 
-		/* refill, and updatetail */
-		aq_rxring_add(sc, rxring, idx);
  rx_next:
+		aq_rxring_reset_desc(sc, rxring, idx);
 		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx), idx);
 	}
 	rxring->rxr_readidx = idx;
