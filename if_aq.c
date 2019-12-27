@@ -4584,7 +4584,7 @@ aq_stop(struct ifnet *ifp, int disable)
 	ifp->if_timer = 0;
 
 	if (!disable) {
-		/* when pmf stop, disable link status intr, and callout */
+		/* when pmf stop, disable link status intr and callout */
 		aq_enable_intr(sc, false, false);
 		callout_stop(&sc->sc_tick_ch);
 	}
