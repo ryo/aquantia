@@ -1078,7 +1078,6 @@ static int aq_txrx_rings_alloc(struct aq_softc *);
 static void aq_txrx_rings_free(struct aq_softc *);
 
 static void aq_initmedia(struct aq_softc *);
-static int aq_mediachange(struct ifnet *);
 static void aq_enable_intr(struct aq_softc *, bool, bool);
 
 static void aq_tick(void *);
@@ -1457,8 +1456,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 
 	aq_enable_intr(sc, true, false);	/* only intr about link */
 
-	/* media update */
-	aq_mediachange(ifp);
+	/* update media */
+	aq_ifmedia_change(ifp);
 
 #ifdef AQ_EVENT_COUNTERS
 	/* get starting statistics values */
@@ -2609,22 +2608,8 @@ aq_mediastatus_update(struct aq_softc *sc)
 	}
 }
 
-static void
-aq_mediastatus(struct ifnet *ifp, struct ifmediareq *ifmr)
-{
-	struct aq_softc *sc = ifp->if_softc;
-
-	ifmr->ifm_active = IFM_ETHER;
-	ifmr->ifm_status = IFM_AVALID;
-
-	if (sc->sc_link_rate != AQ_LINK_NONE)
-		ifmr->ifm_status |= IFM_ACTIVE;
-
-	ifmr->ifm_active |= sc->sc_media_active;
-}
-
 static int
-aq_mediachange(struct ifnet *ifp)
+aq_ifmedia_change(struct ifnet * const ifp)
 {
 	struct aq_softc *sc = ifp->if_softc;
 	aq_link_speed_t rate = AQ_LINK_NONE;
@@ -2670,6 +2655,20 @@ aq_mediachange(struct ifnet *ifp)
 	aq_set_linkmode(sc, rate, fc, eee);
 
 	return 0;
+}
+
+static void
+aq_ifmedia_status(struct ifnet * const ifp, struct ifmediareq *ifmr)
+{
+	struct aq_softc *sc = ifp->if_softc;
+
+	ifmr->ifm_active = IFM_ETHER;
+	ifmr->ifm_status = IFM_AVALID;
+
+	if (sc->sc_link_rate != AQ_LINK_NONE)
+		ifmr->ifm_status |= IFM_ACTIVE;
+
+	ifmr->ifm_active |= sc->sc_media_active;
 }
 
 static void
@@ -3814,15 +3813,6 @@ aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 	}
 }
 
-static void
-aq_txring_start(struct aq_softc *sc, struct aq_txring *txring)
-{
-//	printf("%s:%d: txring[%d] proidx = %d\n", __func__, __LINE__, txring->txr_index, txring->txr_prodidx);
-
-	AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index),
-	    txring->txr_prodidx);
-}
-
 static int
 aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 {
@@ -4457,20 +4447,11 @@ aq_rx_intr(void *arg)
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
 
+ rx_intr_done:
 	mutex_exit(&rxring->rxr_mutex);
+
+	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, __BIT(sc->sc_rx_irq[ringidx]));
 	return n;
-}
-
-static int
-aq_ifmedia_change(struct ifnet * const ifp)
-{
-	return aq_mediachange(ifp);
-}
-
-static void
-aq_ifmedia_status(struct ifnet * const ifp, struct ifmediareq *req)
-{
-	aq_mediastatus(ifp, req);
 }
 
 static int
@@ -4608,8 +4589,9 @@ aq_start(struct ifnet *ifp)
 			break;
 		}
 
-		/* start TX DMA */
-		aq_txring_start(sc, txring);
+		/* update tail ptr */
+		AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index),
+		    txring->txr_prodidx);
 
 		/* Pass the packet to any BPF listeners */
 		bpf_mtap(ifp, m, BPF_D_OUT);
