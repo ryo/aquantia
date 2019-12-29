@@ -3868,9 +3868,11 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_REG(ringidx), RX_DMA_DESC_VLAN_STRIP,
 		    (sc->sc_ethercom.ec_capenable & ETHERCAP_VLAN_HWTAGGING) ? 1 : 0);
 
-		/* reset TAIL pointer, and update readidx (HEAD pointer cannot write) */
-		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx), AQ_RXD_NUM - 1);
-		rxring->rxr_readidx = AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR);
+		/* reload TAIL pointer, and update readidx (HEAD pointer cannot write) */
+		rxring->rxr_readidx = AQ_READ_REG_BIT(sc,
+		    RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR);
+		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx),
+		    (rxring->rxr_readidx + AQ_RXD_NUM - 1) % AQ_RXD_NUM);
 
 		/* Rx ring set mode */
 
