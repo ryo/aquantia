@@ -3917,11 +3917,12 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	if (error == EFBIG) {
 		struct mbuf *n;
 		n = m_defrag(m, M_DONTWAIT);
-		if (n != NULL) {
-			*mp = m = n;
-			error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
-			    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
-		}
+		if (n == NULL)
+			return EFBIG;
+		/* m_defrag() preserve m */
+		KASSERT(n == m);
+		error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
+		    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
 	}
 	if (error != 0)
 		return error;
@@ -3931,10 +3932,9 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	 * +1 is reserved for context descriptor for vlan, etc,.
 	 */
 	if ((map->dm_nsegs + 1)  > txring->txr_nfree) {
-		bus_dmamap_unload(sc->sc_dmat, map);
 		device_printf(sc->sc_dev,
 		    "too many mbuf chain %d\n", map->dm_nsegs);
-		m_freem(m);
+		bus_dmamap_unload(sc->sc_dmat, map);
 		return ENOBUFS;
 	}
 
