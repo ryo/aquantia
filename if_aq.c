@@ -3915,21 +3915,16 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
 	    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
 	if (error == EFBIG) {
-		m = m_defrag(m, M_DONTWAIT);
-		if (m != NULL) {
-			*mp = m;
+		struct mbuf *n;
+		n = m_defrag(m, M_DONTWAIT);
+		if (n != NULL) {
+			*mp = m = n;
 			error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
 			    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
 		}
 	}
-
-
-	if (error != 0) {
-		device_printf(sc->sc_dev,
-		    "Error mapping mbuf into TX chain: error=%d\n", error);
-		m_freem(m);
+	if (error != 0)
 		return error;
-	}
 
 	/*
 	 * check spaces of free descriptors.
