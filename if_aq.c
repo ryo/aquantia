@@ -133,24 +133,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
 #include <sys/types.h>
+
+#include <sys/types.h>
 #include <sys/bitops.h>
 #include <sys/bus.h>
-#include <sys/callout.h>
 #include <sys/cprng.h>
-#include <sys/cpu.h>
-#include <sys/device.h>
-#include <sys/errno.h>
-#include <sys/intr.h>
 #include <sys/interrupt.h>
-#include <sys/ioctl.h>
-#include <sys/kernel.h>
-#include <sys/malloc.h>
-#include <sys/mbuf.h>
 #include <sys/module.h>
-#include <sys/socket.h>
-#include <sys/systm.h>
-
-#include <machine/endian.h>
+#include <sys/pcq.h>
 
 #ifdef XXX_DEBUG_PMAP_EXTRACT
 #include <uvm/uvm_extern.h>
