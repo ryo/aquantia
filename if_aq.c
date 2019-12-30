@@ -617,6 +617,27 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define FW2X_CTRL_STATISTICS			__BIT(62)
 #define FW2X_CTRL_TRANSACTION_ID		__BIT(63)
 
+#define FW2X_SNPRINTB			\
+	"\177\020"			\
+	"b\x23" "PAUSE\0"		\
+	"b\x24" "ASYMMETRIC-PAUSE\0"	\
+	"b\x31" "CABLE-DIAG\0"		\
+	"b\x32" "TEMPERATURE\0"		\
+	"b\x33" "DOWNSHIFT\0"		\
+	"b\x34" "PTP-AVB\0"		\
+	"b\x35" "MEDIA-DETECT\0"	\
+	"b\x36" "LINK-DROP\0"		\
+	"b\x37" "SLEE-PROXY\0"		\
+	"b\x38" "WOL\0"			\
+	"b\x39" "MAC-STOP\0"		\
+	"b\x3a" "EXT-LOOPBACK\0"	\
+	"b\x3b" "INT-LOOPBACK\0"	\
+	"b\x3c" "EFUSE-AGENT\0"		\
+	"b\x3d" "WOL-TIMER\0"		\
+	"b\x3e" "STATISTICS\0"		\
+	"b\x3f" "TRANSACTION-ID\0"	\
+	"\0"
+
 #define FW2X_CTRL_RATE_100M			FW2X_CTRL_100BASETX_FD
 #define FW2X_CTRL_RATE_1G			FW2X_CTRL_1000BASET_FD
 #define FW2X_CTRL_RATE_2G5			FW2X_CTRL_2P5GBASET_FD
@@ -1315,7 +1336,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	    "ncpu=%d, pci_msix_count=%d -> nqueues=%d%s, linkstat_intr=%d\n",
 	    ncpu, msixcount, sc->sc_nqueues,
 	    sc->sc_use_txrx_independent_intr ? "*2" : "",
-	    !sc->sc_poll_linkstat);
+	    sc->sc_poll_linkstat ? 0 : 1);
 
 #ifdef XXX_NO_MSIX
 	sc->sc_msix = false;
@@ -2187,9 +2208,11 @@ fw2x_reset(struct aq_softc *sc)
 		return error;
 	}
 	sc->sc_fw_caps = caps.caps_lo | ((uint64_t)caps.caps_hi << 32);
-	aprint_debug_dev(sc->sc_dev,
-	    "fw2x> F/W capabilities mask = %llx\n",
-	    (unsigned long long)sc->sc_fw_caps);
+
+	char buf[256];
+	snprintb(buf, sizeof(buf), FW2X_SNPRINTB, sc->sc_fw_caps);
+	aprint_verbose_dev(sc->sc_dev,
+	    "fw2x> F/W capabilities=%s\n", buf);
 
 	return 0;
 }
