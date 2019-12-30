@@ -175,6 +175,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define AQ_NINTR_MAX			(AQ_RSSQUEUE_MAX + AQ_RSSQUEUE_MAX + 1)
 					/* TX + RX + LINK. must be <= 32 */
+#define AQ_LINKSTAT_IRQ			31	/* for legacy mode */
+
 #if 1
 #define AQ_TXD_NUM			2048	/* per ring. 8*n && <= 8184 */
 #define AQ_RXD_NUM			2048	/* per ring. 8*n && <= 8184 */
@@ -982,6 +984,7 @@ struct aq_softc {
 	int sc_linkstat_irq;
 	bool sc_use_txrx_independent_intr;
 	bool sc_poll_linkstat;
+	bool sc_detect_linkstat;
 
 	callout_t sc_tick_ch;
 
@@ -3151,6 +3154,8 @@ aq_hw_init(struct aq_softc *sc)
 	);
 
 	/* link interrupt */
+	if (!sc->sc_msix)
+		sc->sc_linkstat_irq = AQ_LINKSTAT_IRQ;
 	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_REG(3), __BIT(7) | sc->sc_linkstat_irq);
 
 	return 0;
@@ -3646,20 +3651,29 @@ aq_txrx_rings_free(struct aq_softc *sc)
 	}
 }
 
+
 static void
 aq_tick(void *arg)
 {
 	struct aq_softc *sc = arg;
 
-	if (sc->sc_poll_linkstat)
+	if (sc->sc_poll_linkstat || sc->sc_detect_linkstat) {
+		sc->sc_detect_linkstat = false;
 		aq_update_link_status(sc);
+	}
 
 #ifdef AQ_EVENT_COUNTERS
 	if (sc->sc_poll_statistics)
 		aq_update_statistics(sc);
 #endif
 
-	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
+	if (sc->sc_poll_linkstat
+#ifdef AQ_EVENT_COUNTERS
+	    || sc->sc_poll_statistics
+#endif
+	    ) {
+		callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
+	}
 }
 
 /* interrupt enable/disable */
@@ -3697,8 +3711,11 @@ aq_legacy_intr(void *arg)
 #endif
 	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, 0xffffffff);
 
-	if (status & __BIT(sc->sc_linkstat_irq))
-		nintr += aq_update_link_status(sc);
+	if (status & __BIT(sc->sc_linkstat_irq)) {
+		sc->sc_detect_linkstat = true;
+		callout_reset(&sc->sc_tick_ch, 0, aq_tick, sc);
+		nintr++;
+	}
 
 	if (status & __BIT(sc->sc_rx_irq[0])) {
 		nintr += aq_rx_intr(&sc->sc_queue[0].rxring);
@@ -3754,14 +3771,16 @@ aq_link_intr(void *arg)
 
 	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
 #ifdef XXX_INTR_DEBUG
-	printf("%s@cpu%d: INTR_MASK/STATUS = %08x/%08\n",
+	printf("%s@cpu%d: INTR_MASK/STATUS = %08x/%08x\n",
 	    __func__, cpu_index(curcpu()),
 	    AQ_READ_REG(sc, AQ_INTR_MASK_REG), status);
 #endif
 
 	if (status & __BIT(sc->sc_linkstat_irq)) {
-		nintr = aq_update_link_status(sc);
+		sc->sc_detect_linkstat = true;
+		callout_reset(&sc->sc_tick_ch, 0, aq_tick, sc);
 		AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, __BIT(sc->sc_linkstat_irq));
+		nintr++;
 	}
 
 	return nintr;
