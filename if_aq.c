@@ -235,8 +235,15 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define FW_MPI_MBOX_ADDR_REG			0x0360
 #define FW1X_MPI_INIT1_REG			0x0364
+#define FW1X_MPI_CONTROL_REG			0x0368
+#define FW1X_MPI_STATE_REG			0x036c
+#define  FW1X_MPI_STATE_MODE			__BITS(7,0)
+#define  FW1X_MPI_STATE_SPEED			__BITS(32,16)
+#define  FW1X_MPI_STATE_DISABLE_DIRTYWAKE	__BITS(25)
+#define  FW1X_MPI_STATE_DOWNSHIFT		__BITS(31,28)
 #define FW1X_MPI_INIT2_REG			0x0370
 #define FW1X_MPI_EFUSEADDR_REG			0x0374
+
 #define FW2X_MPI_EFUSEADDR_REG			0x0364
 #define FW2X_MPI_CONTROL_REG			0x0368	/* 64bit */
 #define FW2X_MPI_STATE_REG			0x0370	/* 64bit */
@@ -572,6 +579,13 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  TX_INTR_MODERATION_CTL_EN		__BIT(1)
 #define  TX_INTR_MODERATION_CTL_MIN		__BITS(15,8)
 #define  TX_INTR_MODERATION_CTL_MAX		__BITS(24,16)
+
+#define FW1X_CTRL_10G				__BIT(0)
+#define FW1X_CTRL_5G				__BIT(1)
+#define FW1X_CTRL_5GSR				__BIT(2)
+#define FW1X_CTRL_2G5				__BIT(3)
+#define FW1X_CTRL_1G				__BIT(4)
+#define FW1X_CTRL_100M				__BIT(5)
 
 #define FW2X_CTRL_10BASET_HD			__BIT(0)
 #define FW2X_CTRL_10BASET_FD			__BIT(1)
@@ -2168,23 +2182,79 @@ static int
 fw1x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
     aq_link_speed_t speed, aq_link_fc_t fc, aq_link_eee_t eee)
 {
-	printf("%s:%d: XXX: not implemented\n", __func__, __LINE__);
-	return ENOSYS;
+	uint32_t mpictrl = 0;
+	uint32_t mpispeed = 0;
+
+	if (speed & AQ_LINK_10G)
+		mpispeed |= FW1X_CTRL_10G;
+	if (speed & AQ_LINK_5G)
+		mpispeed |= (FW1X_CTRL_5G | FW1X_CTRL_5GSR);
+	if (speed & AQ_LINK_2G5)
+		mpispeed |= FW1X_CTRL_2G5;
+	if (speed & AQ_LINK_1G)
+		mpispeed |= FW1X_CTRL_1G;
+	if (speed & AQ_LINK_100M)
+		mpispeed |= FW1X_CTRL_100M;
+
+	mpictrl |= __SHIFTIN(mode, FW1X_MPI_STATE_MODE);
+	mpictrl |= __SHIFTIN(mpispeed, FW1X_MPI_STATE_SPEED);
+	AQ_WRITE_REG(sc, FW1X_MPI_CONTROL_REG, mpictrl);
+	return 0;
 }
 
 static int
-fw1x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *mode,
-    aq_link_speed_t *speed, aq_link_fc_t *fc, aq_link_eee_t *eee)
+fw1x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *modep,
+    aq_link_speed_t *speedp, aq_link_fc_t *fcp, aq_link_eee_t *eeep)
 {
-	printf("%s:%d: XXX: not implemented\n", __func__, __LINE__);
-	return ENOSYS;
+	uint32_t mpistate, mpi_speed;
+	aq_link_speed_t speed = AQ_LINK_NONE;
+
+	mpistate = AQ_READ_REG(sc, FW1X_MPI_STATE_REG);
+
+	if (modep != NULL)
+		*modep = __SHIFTOUT(mpistate, FW1X_MPI_STATE_MODE);
+
+	mpi_speed = __SHIFTOUT(mpistate, FW1X_MPI_STATE_SPEED);
+	if (mpi_speed & FW1X_CTRL_10G)
+		speed = AQ_LINK_10G;
+	else if (mpi_speed & (FW1X_CTRL_5G|FW1X_CTRL_5GSR))
+		speed = AQ_LINK_5G;
+	else if (mpi_speed & FW1X_CTRL_2G5)
+		speed = AQ_LINK_2G5;
+	else if (mpi_speed & FW1X_CTRL_1G)
+		speed = AQ_LINK_1G;
+	else if (mpi_speed & FW1X_CTRL_100M)
+		speed = AQ_LINK_100M;
+
+	if (speedp != NULL)
+		*speedp = speed;
+
+	if (fcp != NULL)
+		*fcp = AQ_FC_NONE;
+
+	if (eeep != NULL)
+		*eeep = AQ_EEE_DISABLE;
+
+	return 0;
 }
 
 static int
 fw1x_get_stats(struct aq_softc *sc, aq_hw_stats_s_t *stats)
 {
-	printf("%s:%d: XXX: not implemented\n", __func__, __LINE__);
-	return ENOSYS;
+	int error;
+
+	error = aq_fw_downld_dwords(sc,
+	    sc->sc_mbox_addr + offsetof(fw1x_mailbox_t, msm), (uint32_t *)stats,
+	    sizeof(aq_hw_stats_s_t) / sizeof(uint32_t));
+	if (error < 0) {
+		device_printf(sc->sc_dev,
+		    "fw2x> download statistics data FAILED, error %d", error);
+		return error;
+	}
+
+	stats->dpc = AQ_READ_REG(sc, RX_DMA_DROP_PKT_CNT_REG);
+	stats->cprc = AQ_READ_REG(sc, RX_DMA_COALESCED_PKT_CNT_REG);
+	return 0;
 }
 
 static int
