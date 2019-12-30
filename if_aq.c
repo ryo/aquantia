@@ -3802,7 +3802,7 @@ aq_tick(void *arg)
 	    || sc->sc_poll_statistics
 #endif
 	    ) {
-		callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
+		callout_schedule(&sc->sc_tick_ch, hz);
 	}
 }
 
@@ -3843,7 +3843,7 @@ aq_legacy_intr(void *arg)
 
 	if (status & __BIT(sc->sc_linkstat_irq)) {
 		sc->sc_detect_linkstat = true;
-		callout_reset(&sc->sc_tick_ch, 0, aq_tick, sc);
+		callout_schedule(&sc->sc_tick_ch, 0);
 		nintr++;
 	}
 
@@ -3908,7 +3908,7 @@ aq_link_intr(void *arg)
 
 	if (status & __BIT(sc->sc_linkstat_irq)) {
 		sc->sc_detect_linkstat = true;
-		callout_reset(&sc->sc_tick_ch, 0, aq_tick, sc);
+		callout_schedule(&sc->sc_tick_ch, 0);
 		AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG,
 		    __BIT(sc->sc_linkstat_irq));
 		nintr++;
@@ -4764,13 +4764,15 @@ aq_init(struct ifnet *ifp)
 	aq_init_rss(sc);
 	aq_hw_l3_filter_set(sc, sc->sc_l3_filter_enable);
 
+	callout_setfunc(&sc->sc_tick_ch, aq_tick, sc);
+
 	/* need to start callout? */
 	if (sc->sc_poll_linkstat
 #ifdef AQ_EVENT_COUNTERS
 	    || sc->sc_poll_statistics
 #endif
 	    ) {
-		callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
+		callout_schedule(&sc->sc_tick_ch, hz);
 	}
 
 	/* ready */
