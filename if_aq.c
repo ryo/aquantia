@@ -56,6 +56,7 @@
 //#define XXX_RXRSS_DEBUG
 //#define XXX_DUMP_RX_MBUF
 //#define XXX_TXDESC_DEBUG
+//#define XXX_TXDESC_MORE_DEBUG
 //#define XXX_TXINTR_DEBUG
 //#define XXX_DUMP_MACTABLE
 //#define XXX_DUMP_RING
@@ -1992,14 +1993,8 @@ aq_fw_reset(struct aq_softc *sc)
 		    "F/W bootload error: unknown bootloader type\n");
 		return ENOTSUP;
 	case FW_BOOT_MODE_RBL_HOST_BOOTLOAD:
-#if 0 /* AQ_CFG_HOST_BOOT_DISABLE */
-		aprint_error_dev(sc->sc_dev, "RBL> Host Bootload mode: "
-		    "this driver does not support Host Boot\n");
-		return ENOTSUP;
-#else
 		aprint_debug_dev(sc->sc_dev, "RBL> Host Bootload mode\n");
 		break;
-#endif
 	}
 
 	/*
@@ -2062,9 +2057,9 @@ aq_hw_init_ucp(struct aq_softc *sc)
 #define AQ_FW_MIN_VERSION_STR	"1.5.6"
 	if (sc->sc_fw_version < AQ_FW_MIN_VERSION) {
 		aprint_error_dev(sc->sc_dev,
-		    "atlantic: wrong FW version: expected:"
+		    "atlantic: wrong FW version: "
 		    AQ_FW_MIN_VERSION_STR
-		    " actual:%d.%d.%d\n",
+		    " or later required, this is %d.%d.%d\n",
 		    FW_VERSION_MAJOR(sc),
 		    FW_VERSION_MINOR(sc),
 		    FW_VERSION_BUILD(sc));
@@ -2757,16 +2752,9 @@ aq_initmedia(struct aq_softc *sc)
 	IFMEDIA_ETHER_ADD(sc, IFM_AUTO);
 	IFMEDIA_ETHER_ADD(sc, IFM_AUTO | IFM_FLOW);
 
-	/* default media */
-#if 0
-	/* default: auto with flowcontrol */
-	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO | IFM_FLOW);
-	aq_set_linkmode(sc, AQ_LINK_AUTO, AQ_FC_ALL, AQ_EEE_DISABLE);
-#else
 	/* default: auto without flowcontrol */
 	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO);
 	aq_set_linkmode(sc, AQ_LINK_AUTO, AQ_FC_NONE, AQ_EEE_DISABLE);
-#endif
 }
 
 static int
@@ -4230,7 +4218,7 @@ aq_tx_intr(void *arg)
 	for (idx = txring->txr_considx; idx != hw_head;
 	    idx = TXRING_NEXTIDX(idx), n++) {
 
-#if 0
+#ifdef XXX_TXDESC_MORE_DEBUG
 		printf("# %s:%d: txring=%d, TX CLEANUP: HEAD/TAIL=%lu/%u,"
 		    " considx/prodidx=%d/%d, idx=%d\n", __func__, __LINE__,
 		    ringidx,
@@ -4242,7 +4230,7 @@ aq_tx_intr(void *arg)
 		    idx);
 #endif
 
-#if 0
+#ifdef XXX_TXDESC_MORE_DEBUG
 		/* DEBUG: show done txdesc */
 		bus_dmamap_sync(sc->sc_dmat, txring->txr_txdesc_dmamap,
 		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
@@ -4254,7 +4242,7 @@ aq_tx_intr(void *arg)
 		    txring->txr_txdesc[idx].ctl2);
 #endif
 
-#if 0
+#ifdef XXX_TXDESC_MORE_DEBUG
 		/* DEBUG: clear done txdesc */
 		txring->txr_txdesc[idx].buf_addr = 0;
 		txring->txr_txdesc[idx].ctl1 = AQ_TXDESC_CTL1_DD;
