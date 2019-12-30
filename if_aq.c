@@ -1,47 +1,47 @@
-//
-// PROBLEM
-//	謎条件で、pingをとりこぼしまくる。attachしてすぐにIP addressを設定すると起きやすい? 初期化問題?
-//		→どうやらaq_update_link_status()でRPB_RXB_XOFF_ENをセットしていたからっぽい? 0固定で良いっぽい。
-//		→まだ起きるっぽい。detach && attach するとなおる(少くともring_num=1,8のとき起きた)
-//		→RX_DMA_HEADは書き換え不可だった。でもこれを修正してもまだ落とすことがある？？？
-//
-//	iperfのudpが極端に遅い。落としまくってる? 他のNICでも起きるのでaqの問題ではなさそう。
-//
-//
-// MEMO?
-//	VLANIDで16ヶのringに振り分け可能?
-//	ETHERTYPEで16ヶのringに振り分け可能?
-//	L3 filterはで8ヶのringに振り分け可能?
-//		（Linux版のAQ_RX_FIRST_LOC_FVLANIDあたりの定義より）
-//	そうだとすると、RX_FLR_RSS_CONTROL1_REG の 0x33333333 の意味がなんとなくわかる(0b11が8ヶ=8ring分)
-//
-//	L3-L4フィルタはその名の通り、discardするかhostのどのringで受けるかを決めるテーブルであり、rssとは関係ないようだ。
-//
-//	RSS_ENABLEの状態だと0800と8d66が届かないけど、statistics的には受信している
-//	そしてUDPはちゃんと受信している。(たぶんL3 filterでUDP throughにしてるせい)
-//
-//
-//
-// TODO
-//	lock
-//	vlan hw filter
-//
-//	hardware offloading (LRO,TSO,RX-L4CSUM problem)
-//	ifp counters
-//	cleanup source
-//	fulldup control? (100baseTX)
-//	IP header offset 4n+2問題
-//	fw1x (revision A0)
-//	tuning
-//
-// DONE
-//	interrupt moderation
-//	vlan
-//	rss
-//	msix
-//	evcnt
-//
-//
+//COMMENT:	
+//COMMENT:	 PROBLEM
+//COMMENT:		謎条件で、pingをとりこぼしまくる。attachしてすぐにIP addressを設定すると起きやすい? 初期化問題?
+//COMMENT:			→どうやらaq_update_link_status()でRPB_RXB_XOFF_ENをセットしていたからっぽい? 0固定で良いっぽい。
+//COMMENT:			→まだ起きるっぽい。detach && attach するとなおる(少くともring_num=1,8のとき起きた)
+//COMMENT:			→RX_DMA_HEADは書き換え不可だった。でもこれを修正してもまだ落とすことがある？？？
+//COMMENT:	
+//COMMENT:		iperfのudpが極端に遅い。落としまくってる? 他のNICでも起きるのでaqの問題ではなさそう。
+//COMMENT:	
+//COMMENT:	
+//COMMENT:	 MEMO?
+//COMMENT:		VLANIDで16ヶのringに振り分け可能?
+//COMMENT:		ETHERTYPEで16ヶのringに振り分け可能?
+//COMMENT:		L3 filterはで8ヶのringに振り分け可能?
+//COMMENT:			（Linux版のAQ_RX_FIRST_LOC_FVLANIDあたりの定義より）
+//COMMENT:		そうだとすると、RX_FLR_RSS_CONTROL1_REG の 0x33333333 の意味がなんとなくわかる(0b11が8ヶ=8ring分)
+//COMMENT:	
+//COMMENT:		L3-L4フィルタはその名の通り、discardするかhostのどのringで受けるかを決めるテーブルであり、rssとは関係ないようだ。
+//COMMENT:	
+//COMMENT:		RSS_ENABLEの状態だと0800と8d66が届かないけど、statistics的には受信している
+//COMMENT:		そしてUDPはちゃんと受信している。(たぶんL3 filterでUDP throughにしてるせい)
+//COMMENT:	
+//COMMENT:	
+//COMMENT:	
+//COMMENT:	 TODO
+//COMMENT:		lock
+//COMMENT:		vlan hw filter
+//COMMENT:	
+//COMMENT:		hardware offloading (LRO,TSO,RX-L4CSUM problem)
+//COMMENT:		ifp counters
+//COMMENT:		cleanup source
+//COMMENT:		fulldup control? (100baseTX)
+//COMMENT:		IP header offset 4n+2問題
+//COMMENT:		fw1x (revision A0)
+//COMMENT:		tuning
+//COMMENT:	
+//COMMENT:	 DONE
+//COMMENT:		interrupt moderation
+//COMMENT:		vlan
+//COMMENT:		rss
+//COMMENT:		msix
+//COMMENT:		evcnt
+//COMMENT:	
+//COMMENT:	
 
 //#define XXX_FORCE_32BIT_PA
 //#define XXX_FORCE_UDP_TO_RING0
@@ -60,6 +60,7 @@
 //#define XXX_DUMP_MACTABLE
 //#define XXX_DUMP_RING
 //#define XXX_DUMP_RSSKEY
+//#define XXX_ONLY_8_DESCRIPTOR_TEST
 
 /*	$NetBSD$	*/
 
@@ -167,10 +168,12 @@ __KERNEL_RCSID(0, "$NetBSD$");
 					/* TX + RX + LINK. must be <= 32 */
 #define AQ_LINKSTAT_IRQ			31	/* for legacy mode */
 
-#if 1
 #define AQ_TXD_NUM			2048	/* per ring. 8*n && <= 8184 */
 #define AQ_RXD_NUM			2048	/* per ring. 8*n && <= 8184 */
-#else
+
+#ifdef XXX_ONLY_8_DESCRIPTOR_TEST
+#undef AQ_TXD_NUM
+#undef  AQ_RXD_NUM
 /* stress debug */
 #define AQ_TXD_NUM			8	/* per ring. 8*n && <= 8184 */
 #define AQ_RXD_NUM			8	/* per ring. 8*n && <= 8184 */
@@ -1237,10 +1240,9 @@ aq_attach(device_t parent, device_t self, void *aux)
 
 	sc->sc_pc = pc = pa->pa_pc;
 	sc->sc_pcitag = tag = pa->pa_tag;
+	sc->sc_dmat = pci_dma64_available(pa) ? pa->pa_dmat64 : pa->pa_dmat;
 #ifdef XXX_FORCE_32BIT_PA
 	sc->sc_dmat = pa->pa_dmat;
-#else
-	sc->sc_dmat = pci_dma64_available(pa) ? pa->pa_dmat64 : pa->pa_dmat;
 #endif
 
 	command = pci_conf_read(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG);
@@ -1352,7 +1354,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 	else
 		sc->sc_rss_enable = false;
 
-
 #ifdef CONFIG_L3_FILTER_SUPPORT
 	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_SUPPORT;
 #endif
@@ -1384,7 +1385,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 	error = aq_hw_init(sc);	/* initialize and interrupts */
 	if (error != 0)
 		goto attach_failure;
-
 
 	sc->sc_media_type = aqp->aq_media_type;
 	sc->sc_available_rates = aqp->aq_available_rates;
@@ -3759,7 +3759,6 @@ aq_txrx_rings_free(struct aq_softc *sc)
 	}
 }
 
-
 static void
 aq_tick(void *arg)
 {
@@ -4106,7 +4105,6 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 
 		ctl1_ctx |= AQ_TXDESC_CTL1_CMD_VLAN;
 		ctl2 |= AQ_TXDESC_CTL2_CTX_EN;
-
 
 		/* fill context descriptor and forward index */
 		txring->txr_txdesc[idx].buf_addr = 0;
