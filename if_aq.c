@@ -2259,17 +2259,17 @@ fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
 }
 
 static int
-fw2x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *mode,
+fw2x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *modep,
     aq_link_speed_t *speedp, aq_link_fc_t *fcp, aq_link_eee_t *eeep)
 {
 	uint64_t mpi_state = AQ_READ64_REG(sc, FW2X_MPI_STATE_REG);
 
-	if (mode != NULL) {
+	if (modep != NULL) {
 		uint64_t mpi_ctrl = AQ_READ64_REG(sc, FW2X_MPI_CONTROL_REG);
 		if (mpi_ctrl & FW2X_CTRL_RATE_MASK)
-			*mode = MPI_INIT;
+			*modep = MPI_INIT;
 		else
-			*mode = MPI_DEINIT;
+			*modep = MPI_DEINIT;
 	}
 
 	aq_link_speed_t speed = AQ_LINK_NONE;
@@ -2297,7 +2297,7 @@ fw2x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *mode,
 
 	/* XXX: TODO: EEE */
 	if (eeep != NULL)
-		*eeep = 0;
+		*eeep = AQ_EEE_DISABLE;
 
 	return 0;
 }
