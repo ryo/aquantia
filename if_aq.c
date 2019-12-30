@@ -1573,10 +1573,8 @@ aq_establish_intr(struct aq_softc *sc, int intno, kcpuset_t *affinity, int (*fun
 	intrstr = pci_intr_string(pc, sc->sc_intrs[intno], intrbuf,
 	    sizeof(intrbuf));
 
-#ifdef AQ_MPSAFE
 	pci_intr_setattr(pc, &sc->sc_intrs[intno],
 	    PCI_INTR_MPSAFE, true);
-#endif
 
 	vih = pci_intr_establish_xname(pc, sc->sc_intrs[intno],
 	    IPL_NET, func, arg, xname);
@@ -3929,11 +3927,11 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 
 	/*
 	 * check spaces of free descriptors.
-	 * +1 is reserved for context descriptor for vlan, etc,.
+	 * +1 is additional descriptor for context (vlan, etc,.)
 	 */
-	if ((map->dm_nsegs + 1)  > txring->txr_nfree) {
+	if ((map->dm_nsegs + 1) > txring->txr_nfree) {
 		device_printf(sc->sc_dev,
-		    "too many mbuf chain %d\n", map->dm_nsegs);
+		    "TX: not enough descriptors left %d for %d segs\n", txring->txr_nfree, map->dm_nsegs + 1);
 		bus_dmamap_unload(sc->sc_dmat, map);
 		return ENOBUFS;
 	}
@@ -4092,7 +4090,7 @@ aq_tx_intr(void *arg)
 	}
 	txring->txr_considx = idx;
 
-	if (txring->txr_nfree > 0)
+	if (ringidx == 0 && txring->txr_nfree >= 2)
 		ifp->if_flags &= ~IFF_OACTIVE;
 
 	/* no more pending TX packet, cancel watchdog */
@@ -4536,10 +4534,12 @@ aq_start(struct ifnet *ifp)
 {
 	struct aq_softc *sc;
 	struct mbuf *m;
-	int npkt;
 	struct aq_txring *txring;
+	int npkt, error;
 
-	if ((ifp->if_flags & (IFF_RUNNING | IFF_OACTIVE)) != IFF_RUNNING)
+	if ((ifp->if_flags & IFF_RUNNING) == 0)
+		return;
+	if ((ifp->if_flags & IFF_OACTIVE) != 0)
 		return;
 
 	sc = ifp->if_softc;
@@ -4561,21 +4561,20 @@ aq_start(struct ifnet *ifp)
 		if (m == NULL)
 			break;
 
-		if (txring->txr_nfree <= 0) {
-			/* no tx descriptor now... */
-			ifp->if_flags |= IFF_OACTIVE;
+		if (txring->txr_nfree < 2) {
 			device_printf(sc->sc_dev, "TX descriptor is full\n");
 			break;
 		}
 
 		IFQ_DEQUEUE(&ifp->if_snd, m);
 
-		if (aq_encap_txring(sc, txring, &m) != 0) {
-			/* too many mbuf chains? */
-			device_printf(sc->sc_dev,
-			    "TX descriptor enqueueing failure. dropping packet\n");
+		error = aq_encap_txring(sc, txring, &m);
+		if (error != 0) {
+			/* too many mbuf chains? or not enough descriptors? */
 			m_freem(m);
 			ifp->if_oerrors++;
+			if (error == ENOBUFS)
+				ifp->if_flags |= IFF_OACTIVE;
 			break;
 		}
 
@@ -4586,6 +4585,9 @@ aq_start(struct ifnet *ifp)
 		/* Pass the packet to any BPF listeners */
 		bpf_mtap(ifp, m, BPF_D_OUT);
 	}
+
+	if (txring->txr_nfree <= 2)
+		ifp->if_flags |= IFF_OACTIVE;
 
 	mutex_exit(&txring->txr_mutex);
 
