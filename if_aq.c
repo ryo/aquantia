@@ -137,6 +137,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/types.h>
 #include <sys/bitops.h>
 #include <sys/cprng.h>
+#include <sys/cpu.h>
 #include <sys/interrupt.h>
 #include <sys/module.h>
 #include <sys/pcq.h>
@@ -924,6 +925,9 @@ struct aq_txring {
 	kmutex_t txr_mutex;
 	bool txr_active;
 
+	pcq_t *txr_pcq;
+	void *txr_softint;
+
 	aq_tx_desc_t *txr_txdesc;	/* aq_tx_desc_t[AQ_TXD_NUM] */
 	bus_dmamap_t txr_txdesc_dmamap;
 	bus_dma_segment_t txr_txdesc_seg[1];
@@ -1110,6 +1114,8 @@ static void aq_ifmedia_status(struct ifnet * const, struct ifmediareq *);
 static int aq_ifflags_cb(struct ethercom *);
 static int aq_init(struct ifnet *);
 static void aq_send_common_locked(struct ifnet *, struct aq_softc *, struct aq_txring *, bool);
+static int aq_transmit(struct ifnet *, struct mbuf *);
+static void aq_deferred_transmit(void *);
 static void aq_start(struct ifnet *);
 static void aq_stop(struct ifnet *, int);
 static void aq_watchdog(struct ifnet *);
@@ -1117,6 +1123,8 @@ static int aq_ioctl(struct ifnet *, unsigned long, void *);
 
 static int aq_txrx_rings_alloc(struct aq_softc *);
 static void aq_txrx_rings_free(struct aq_softc *);
+static int aq_tx_pcq_alloc(struct aq_softc *, struct aq_txring *);
+static void aq_tx_pcq_free(struct aq_softc *, struct aq_txring *);
 
 static void aq_initmedia(struct aq_softc *);
 static void aq_enable_intr(struct aq_softc *, bool, bool);
@@ -1442,6 +1450,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 	ifp->if_baudrate = IF_Gbps(10);
 	ifp->if_init = aq_init;
 	ifp->if_ioctl = aq_ioctl;
+	if (sc->sc_msix && (sc->sc_nqueues > 1))
+		ifp->if_transmit = aq_transmit;
 	ifp->if_start = aq_start;
 	ifp->if_stop = aq_stop;
 	ifp->if_watchdog = aq_watchdog;
@@ -3733,6 +3743,10 @@ aq_txrx_rings_alloc(struct aq_softc *sc)
 		if (error != 0)
 			goto failure;
 
+		error = aq_tx_pcq_alloc(sc, &sc->sc_queue[n].txring);
+		if (error != 0)
+			goto failure;
+
 		sc->sc_queue[n].rxring.rxr_sc = sc;
 		sc->sc_queue[n].rxring.rxr_index = n;
 		mutex_init(&sc->sc_queue[n].rxring.rxr_mutex, MUTEX_DEFAULT,
@@ -3823,8 +3837,54 @@ aq_txrx_rings_free(struct aq_softc *sc)
 		aq_txring_free(sc, &sc->sc_queue[n].txring);
 		mutex_destroy(&sc->sc_queue[n].txring.txr_mutex);
 
+		aq_tx_pcq_free(sc, &sc->sc_queue[n].txring);
+
 		aq_rxring_free(sc, &sc->sc_queue[n].rxring);
 		mutex_destroy(&sc->sc_queue[n].rxring.rxr_mutex);
+	}
+}
+
+static int
+aq_tx_pcq_alloc(struct aq_softc *sc, struct aq_txring *txring)
+{
+	int error = 0;
+	txring->txr_softint = NULL;
+
+	txring->txr_pcq = pcq_create(AQ_TXD_NUM, KM_NOSLEEP);
+	if (txring->txr_pcq == NULL) {
+		aprint_error_dev(sc->sc_dev,
+		    "unable to allocate pcq for TXring[%d]\n", txring->txr_index);
+		error = ENOMEM;
+		goto done;
+	}
+
+	txring->txr_softint = softint_establish(SOFTINT_NET | SOFTINT_MPSAFE,
+	    aq_deferred_transmit, txring);
+	if (txring->txr_softint == NULL) {
+		aprint_error_dev(sc->sc_dev,
+		    "unable to establish softint for TXring[%d]\n", txring->txr_index);
+		error = ENOENT;
+	}
+
+ done:
+	return error;
+}
+
+static void
+aq_tx_pcq_free(struct aq_softc *sc, struct aq_txring *txring)
+{
+	struct mbuf *m;
+
+	if (txring->txr_softint != NULL) {
+		softint_disestablish(txring->txr_softint);
+		txring->txr_softint = NULL;
+	}
+
+	if (txring->txr_pcq != NULL) {
+		while ((m = pcq_get(txring->txr_pcq)) != NULL)
+			m_freem(m);
+		pcq_destroy(txring->txr_pcq);
+		txring->txr_pcq = NULL;
 	}
 }
 
@@ -4845,9 +4905,9 @@ aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc, struct aq_txring *
 #endif
 
 	for (npkt = 0; ; npkt++) {
-//		if (is_transmit)
-//			m = pcq_peek(txring->txr_interq);
-//		else
+		if (is_transmit)
+			m = pcq_peek(txring->txr_pcq);
+		else
 			IFQ_POLL(&ifp->if_snd, m);
 
 		if (m == NULL)
@@ -4856,9 +4916,9 @@ aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc, struct aq_txring *
 		if (txring->txr_nfree < AQ_TXD_MIN)
 			break;
 
-//		if (is_transmit)
-//			pcq_get(txring->txr_interq);
-//		else
+		if (is_transmit)
+			pcq_get(txring->txr_pcq);
+		else
 			IFQ_DEQUEUE(&ifp->if_snd, m);
 
 		error = aq_encap_txring(sc, txring, &m);
@@ -4898,6 +4958,49 @@ aq_start(struct ifnet *ifp)
 	mutex_enter(&txring->txr_mutex);
 	if (txring->txr_active && !ISSET(ifp->if_flags, IFF_OACTIVE))
 		aq_send_common_locked(ifp, sc, txring, false);
+	mutex_exit(&txring->txr_mutex);
+}
+
+static inline unsigned int
+aq_select_txqueue(struct aq_softc *sc, struct mbuf *m)
+{
+	return (cpu_index(curcpu()) % sc->sc_nqueues);
+}
+
+static int
+aq_transmit(struct ifnet *ifp, struct mbuf *m)
+{
+	struct aq_softc *sc = ifp->if_softc;
+	struct aq_txring *txring;
+	int ringidx;
+
+	ringidx = aq_select_txqueue(sc, m);
+	txring = &sc->sc_queue[ringidx].txring;
+
+	if (__predict_false(!pcq_put(txring->txr_pcq, m))) {
+		m_freem(m);
+		return ENOBUFS;
+	}
+
+	if (mutex_tryenter(&txring->txr_mutex)) {
+		aq_send_common_locked(ifp, sc, txring, true);
+		mutex_exit(&txring->txr_mutex);
+	} else {
+		softint_schedule(txring->txr_softint);
+	}
+	return 0;
+}
+
+static void
+aq_deferred_transmit(void *arg)
+{
+	struct aq_txring *txring = arg;
+	struct aq_softc *sc = txring->txr_sc;
+	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+
+	mutex_enter(&txring->txr_mutex);
+	if (pcq_peek(txring->txr_pcq) != NULL)
+		aq_send_common_locked(ifp, sc, txring, true);
 	mutex_exit(&txring->txr_mutex);
 }
 
