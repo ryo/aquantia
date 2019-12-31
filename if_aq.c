@@ -135,10 +135,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
 #include <sys/types.h>
-
-#include <sys/types.h>
 #include <sys/bitops.h>
-#include <sys/bus.h>
 #include <sys/cprng.h>
 #include <sys/interrupt.h>
 #include <sys/module.h>
@@ -171,6 +168,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define AQ_TXD_NUM			2048	/* per ring. 8*n && <= 8184 */
 #define AQ_RXD_NUM			2048	/* per ring. 8*n && <= 8184 */
+/* minimum required to send a packet (vlan needs additional TX descriptor) */
+#define AQ_TXD_MIN			(1 + 1)
 
 #ifdef XXX_ONLY_8_DESCRIPTOR_TEST
 #undef AQ_TXD_NUM
@@ -179,6 +178,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_TXD_NUM			8	/* per ring. 8*n && <= 8184 */
 #define AQ_RXD_NUM			8	/* per ring. 8*n && <= 8184 */
 #endif
+
 
 /* hardware specification */
 #define AQ_RINGS_NUM			32
@@ -1109,6 +1109,7 @@ static int aq_ifmedia_change(struct ifnet * const);
 static void aq_ifmedia_status(struct ifnet * const, struct ifmediareq *);
 static int aq_ifflags_cb(struct ethercom *);
 static int aq_init(struct ifnet *);
+static void aq_send_common_locked(struct ifnet *, struct aq_softc *, struct aq_txring *, bool);
 static void aq_start(struct ifnet *);
 static void aq_stop(struct ifnet *, int);
 static void aq_watchdog(struct ifnet *);
@@ -4315,7 +4316,7 @@ aq_tx_intr(void *arg)
 	}
 	txring->txr_considx = idx;
 
-	if (ringidx == 0 && txring->txr_nfree >= 2)
+	if (ringidx == 0 && txring->txr_nfree >= AQ_TXD_MIN)
 		ifp->if_flags &= ~IFF_OACTIVE;
 
 	/* no more pending TX packet, cancel watchdog */
@@ -4824,21 +4825,13 @@ aq_init(struct ifnet *ifp)
 }
 
 static void
-aq_start(struct ifnet *ifp)
+aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc, struct aq_txring *txring, bool is_transmit)
 {
-	struct aq_softc *sc;
 	struct mbuf *m;
-	struct aq_txring *txring;
 	int npkt, error;
 
 	if ((ifp->if_flags & IFF_RUNNING) == 0)
 		return;
-	if ((ifp->if_flags & IFF_OACTIVE) != 0)
-		return;
-
-	sc = ifp->if_softc;
-
-	txring = &sc->sc_queue[0].txring;	/* XXX: always use TX ring[0] */
 
 #ifdef XXX_TXDESC_DEBUG
 	printf("%s:%d: "
@@ -4851,19 +4844,22 @@ aq_start(struct ifnet *ifp)
 	    AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
 #endif
 
-	mutex_enter(&txring->txr_mutex);
-
 	for (npkt = 0; ; npkt++) {
-		IFQ_POLL(&ifp->if_snd, m);
+//		if (is_transmit)
+//			m = pcq_peek(txring->txr_interq);
+//		else
+			IFQ_POLL(&ifp->if_snd, m);
+
 		if (m == NULL)
 			break;
 
-		if (txring->txr_nfree < 2) {
-			device_printf(sc->sc_dev, "TX descriptor is full\n");
+		if (txring->txr_nfree < AQ_TXD_MIN)
 			break;
-		}
 
-		IFQ_DEQUEUE(&ifp->if_snd, m);
+//		if (is_transmit)
+//			pcq_get(txring->txr_interq);
+//		else
+			IFQ_DEQUEUE(&ifp->if_snd, m);
 
 		error = aq_encap_txring(sc, txring, &m);
 		if (error != 0) {
@@ -4883,13 +4879,26 @@ aq_start(struct ifnet *ifp)
 		bpf_mtap(ifp, m, BPF_D_OUT);
 	}
 
-	if (txring->txr_nfree <= 2)
+	if (!is_transmit && txring->txr_nfree < AQ_TXD_MIN)
 		ifp->if_flags |= IFF_OACTIVE;
-
-	mutex_exit(&txring->txr_mutex);
 
 	if (npkt)
 		ifp->if_timer = 5;
+}
+
+static void
+aq_start(struct ifnet *ifp)
+{
+	struct aq_softc *sc;
+	struct aq_txring *txring;
+
+	sc = ifp->if_softc;
+	txring = &sc->sc_queue[0].txring; /* aq_start() always use TX ring[0] */
+
+	mutex_enter(&txring->txr_mutex);
+	if (txring->txr_active && !ISSET(ifp->if_flags, IFF_OACTIVE))
+		aq_send_common_locked(ifp, sc, txring, false);
+	mutex_exit(&txring->txr_mutex);
 }
 
 static void
