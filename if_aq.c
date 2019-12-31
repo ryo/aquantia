@@ -45,7 +45,6 @@
 
 //#define XXX_FORCE_32BIT_PA
 //#define XXX_FORCE_UDP_TO_RING0
-//#define XXX_NO_TXRX_INDEPENDENT
 //#define XXX_NO_MSIX
 //#define XXX_DEBUG_PMAP_EXTRACT
 //#define XXX_FORCE_POLL_LINKSTAT
@@ -101,7 +100,7 @@
  */
 
 /*-
- * Copyright (c) 2019 Ryo Shimizu <ryo@nerv.org>
+ * Copyright (c) 2020 Ryo Shimizu <ryo@nerv.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -162,6 +161,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define CONFIG_INTR_MODERATION_ENABLE	1	/* delayed interrupt */
 #undef CONFIG_LRO_SUPPORT			/* no LRO not suppoted */
 #undef CONFIG_L3_FILTER_SUPPORT			/* no L3 filter suppoted */
+#undef CONFIG_NO_TXRX_INDEPENDENT		/* share TX/RX interrupts */
 
 #define AQ_NINTR_MAX			(AQ_RSSQUEUE_MAX + AQ_RSSQUEUE_MAX + 1)
 					/* TX + RX + LINK. must be <= 32 */
@@ -1328,7 +1328,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 		sc->sc_nqueues = 1;
 
 	int msixcount = pci_msix_count(pa->pa_pc, pa->pa_tag);
-#ifndef XXX_NO_TXRX_INDEPENDENT
+#ifndef CONFIG_NO_TXRX_INDEPENDENT
 	if (msixcount >= (sc->sc_nqueues * 2 + 1)) {
 		/* TX intrs + RX intrs + LINKSTAT intrs */
 		sc->sc_use_txrx_independent_intr = true;
