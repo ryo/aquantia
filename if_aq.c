@@ -1393,6 +1393,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 		return;
 
 	callout_init(&sc->sc_tick_ch, 0);
+	callout_setfunc(&sc->sc_tick_ch, aq_tick, sc);
 
 #ifdef XXX_FORCE_POLL_LINKSTAT
 	sc->sc_poll_linkstat = true;
@@ -4855,8 +4856,6 @@ aq_init(struct ifnet *ifp)
 
 	aq_init_rss(sc);
 	aq_hw_l3_filter_set(sc, sc->sc_l3_filter_enable);
-
-	callout_setfunc(&sc->sc_tick_ch, aq_tick, sc);
 
 	/* need to start callout? */
 	if (sc->sc_poll_linkstat
