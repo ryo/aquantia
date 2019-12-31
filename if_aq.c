@@ -158,9 +158,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <dev/pci/pcidevs.h>
 
 /* driver configuration */
-#define CONFIG_INTR_MODERATION_ENABLE	1	/* delayed interrupt */
+#define CONFIG_INTR_MODERATION_ENABLE	true	/* delayed interrupt */
 #undef CONFIG_LRO_SUPPORT			/* no LRO not suppoted */
-#undef CONFIG_L3_FILTER_SUPPORT			/* no L3 filter suppoted */
 #undef CONFIG_NO_TXRX_INDEPENDENT		/* share TX/RX interrupts */
 
 #define AQ_NINTR_MAX			(AQ_RSSQUEUE_MAX + AQ_RSSQUEUE_MAX + 1)
@@ -1063,7 +1062,6 @@ struct aq_softc {
 
 	bool sc_intr_moderation_enable;
 	bool sc_rss_enable;
-	bool sc_l3_filter_enable;
 
 	int sc_media_active;
 
@@ -1290,6 +1288,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	sc->sc_dmat = pa->pa_dmat;
 #endif
 
+
 	command = pci_conf_read(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG);
 	command |= PCI_COMMAND_MASTER_ENABLE;
 	pci_conf_write(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG, command);
@@ -1404,10 +1403,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 		sc->sc_rss_enable = true;
 	else
 		sc->sc_rss_enable = false;
-
-#ifdef CONFIG_L3_FILTER_SUPPORT
-	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_SUPPORT;
-#endif
 
 	error = aq_txrx_rings_alloc(sc);
 	if (error != 0)
@@ -3217,7 +3212,7 @@ aq_init_rss(struct aq_softc *sc)
 }
 
 static void
-aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
+aq_hw_l3_filter_set(struct aq_softc *sc)
 {
 	int i;
 
@@ -3226,9 +3221,8 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(i),
 		    RPF_L3_FILTER_L4_EN, 0);
 	}
-
-	if (!enable) {
 #ifdef XXX_FORCE_UDP_TO_RING0
+	if (!enable) {
 		/*
 		 * HW bug workaround:
 		 * Disable RSS for UDP using rx flow filter 0.
@@ -3247,8 +3241,8 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 		    RPF_L3_FILTER_L4_RXQUEUE, 0);	/* to rxring[0] */
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0),
 		    RPF_L3_FILTER_L4_ACTION, RPF_ACTION_HOST);
-#endif
 	}
+#endif
 }
 
 static void
@@ -4054,7 +4048,7 @@ aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRLSW_REG(ringidx),
 		    paddr);
 		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRMSW_REG(ringidx),
-		    paddr >> 32);
+		    (uint32_t)((uint64_t)paddr >> 32));
 
 		/* TX descriptor size */
 		AQ_WRITE_REG_BIT(sc, TX_DMA_DESC_REG(ringidx), TX_DMA_DESC_LEN,
@@ -4118,7 +4112,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRLSW_REG(ringidx),
 		    paddr);
 		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRMSW_REG(ringidx),
-		    paddr >> 32);
+		    (uint32_t)((uint64_t)paddr >> 32));
 
 		/* RX descriptor size */
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_REG(ringidx), RX_DMA_DESC_LEN,
@@ -4458,7 +4452,8 @@ aq_rx_intr(void *arg)
 
 		if ((rxd_status & RXDESC_STATUS_MACERR) ||
 		    (rxd_type & RXDESC_TYPE_MAC_DMA_ERR)) {
-			/* XXX */
+			ifp->if_ierrors++;
+#ifdef XXX_RXDESC_DEBUG
 			device_printf(sc->sc_dev,
 			    "DMA_ERR: desc[%d] type=0x%08x, hash=0x%08x,"
 			    " status=0x%08x, pktlen=%u, nextdesc=%u,"
@@ -4466,16 +4461,17 @@ aq_rx_intr(void *arg)
 			    idx, rxd_type, rxd_hash, rxd_status, rxd_pktlen,
 			    rxd_nextdescptr, rxd_vlan);
 			device_printf(sc->sc_dev,
-			    "DMA_ERR: type: rsstype=0x%lx, rdm=%ld,"
-			    " ipv4checked=%ld, tcpudpchecked=%ld,"
-			    " sph=%ld, hdrlen=%ld\n",
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_MAC_DMA_ERR),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED),
-			    __SHIFTOUT(rxd_type,
+			    "DMA_ERR: type: rsstype=0x%x, rdm=%u,"
+			    " ipv4checked=%u, tcpudpchecked=%u,"
+			    " sph=%u, hdrlen=%u\n",
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_MAC_DMA_ERR),
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED),
+			    (uint32_t)__SHIFTOUT(rxd_type,
 			    RXDESC_TYPE_TCPUDP_CSUM_CHECKED),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
+#endif
 			goto rx_next;
 		}
 
@@ -4629,14 +4625,14 @@ aq_rx_intr(void *arg)
 			unsigned int pkttype_eth =
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_ETHER);
 
-			printf("RXring[%d].desc[%d] rsstype=0x%lx(%s),"
-			    " RssHash=0x%08x, pkttype_vlan=%lu/%lu,"
+			printf("RXring[%d].desc[%d] rsstype=0x%x(%s),"
+			    " RssHash=0x%08x, pkttype_vlan=%u/%u,"
 			    " pkttype_eth=%u(%s), pkttype_proto=%u(%s)\n",
 			    ringidx, idx,
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE), rsstype,
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE), rsstype,
 			    rxd_hash,
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
-			    __SHIFTOUT(rxd_type,
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
+			    (uint32_t)__SHIFTOUT(rxd_type,
 			    RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE),
 			    pkttype_eth, pkttype_eth_table[pkttype_eth],
 			    pkttype_proto, pkttype_proto_table[pkttype_proto]);
@@ -4855,7 +4851,7 @@ aq_init(struct ifnet *ifp)
 #endif
 
 	aq_init_rss(sc);
-	aq_hw_l3_filter_set(sc, sc->sc_l3_filter_enable);
+	aq_hw_l3_filter_set(sc);
 
 	/* need to start callout? */
 	if (sc->sc_poll_linkstat
