@@ -1613,8 +1613,7 @@ aq_establish_intr(struct aq_softc *sc, int intno, kcpuset_t *affinity,
 	intrstr = pci_intr_string(pc, sc->sc_intrs[intno], intrbuf,
 	    sizeof(intrbuf));
 
-	pci_intr_setattr(pc, &sc->sc_intrs[intno],
-	    PCI_INTR_MPSAFE, true);
+	pci_intr_setattr(pc, &sc->sc_intrs[intno], PCI_INTR_MPSAFE, true);
 
 	vih = pci_intr_establish_xname(pc, sc->sc_intrs[intno],
 	    IPL_NET, func, arg, xname);
@@ -1807,8 +1806,7 @@ mac_soft_reset_rbl(struct aq_softc *sc, aq_fw_bootloader_mode_t *mode)
 #define RBL_TIMEOUT_MS	10000
 	uint16_t rbl_status;
 	for (timo = RBL_TIMEOUT_MS; timo > 0; timo--) {
-		rbl_status =
-		    AQ_READ_REG(sc, FW_BOOT_EXIT_CODE_REG) & 0xffff;
+		rbl_status = AQ_READ_REG(sc, FW_BOOT_EXIT_CODE_REG) & 0xffff;
 		if (rbl_status != 0 && rbl_status != RBL_STATUS_DEAD)
 			break;
 		msec_delay(1);
@@ -1822,8 +1820,7 @@ mac_soft_reset_rbl(struct aq_softc *sc, aq_fw_bootloader_mode_t *mode)
 	case RBL_STATUS_SUCCESS:
 		if (mode != NULL)
 			*mode = FW_BOOT_MODE_RBL_FLASH;
-		aprint_debug_dev(sc->sc_dev,
-		    "RBL> reset complete! [Flash]\n");
+		aprint_debug_dev(sc->sc_dev, "RBL> reset complete! [Flash]\n");
 		break;
 	case RBL_STATUS_HOST_BOOT:
 		if (mode != NULL)
@@ -2065,8 +2062,7 @@ aq_hw_init_ucp(struct aq_softc *sc)
 	}
 
 	for (timo = 100; timo > 0; timo--) {
-		sc->sc_mbox_addr =
-		    AQ_READ_REG(sc, FW_MPI_MBOX_ADDR_REG);
+		sc->sc_mbox_addr = AQ_READ_REG(sc, FW_MPI_MBOX_ADDR_REG);
 		if (sc->sc_mbox_addr != 0)
 			break;
 		delay(1000);
@@ -2076,8 +2072,7 @@ aq_hw_init_ucp(struct aq_softc *sc)
 #define AQ_FW_MIN_VERSION_STR	"1.5.6"
 	if (sc->sc_fw_version < AQ_FW_MIN_VERSION) {
 		aprint_error_dev(sc->sc_dev,
-		    "atlantic: wrong FW version: "
-		    AQ_FW_MIN_VERSION_STR
+		    "atlantic: wrong FW version: " AQ_FW_MIN_VERSION_STR
 		    " or later required, this is %d.%d.%d\n",
 		    FW_VERSION_MAJOR(sc),
 		    FW_VERSION_MINOR(sc),
@@ -2178,8 +2173,7 @@ fw1x_reset(struct aq_softc *sc)
 		 */
 		delay(10);
 	}
-	aprint_error_dev(sc->sc_dev,
-	    "F/W 1.x reset finalize timeout\n");
+	aprint_error_dev(sc->sc_dev, "F/W 1.x reset finalize timeout\n");
 	return EBUSY;
 }
 
@@ -2253,7 +2247,7 @@ fw1x_get_stats(struct aq_softc *sc, aq_hw_stats_s_t *stats)
 	    sizeof(aq_hw_stats_s_t) / sizeof(uint32_t));
 	if (error < 0) {
 		device_printf(sc->sc_dev,
-		    "fw2x> download statistics data FAILED, error %d", error);
+		    "fw1x> download statistics data FAILED, error %d", error);
 		return error;
 	}
 
@@ -2281,8 +2275,7 @@ fw2x_reset(struct aq_softc *sc)
 
 	char buf[256];
 	snprintb(buf, sizeof(buf), FW2X_SNPRINTB, sc->sc_fw_caps);
-	aprint_verbose_dev(sc->sc_dev,
-	    "fw2x> F/W capabilities=%s\n", buf);
+	aprint_verbose_dev(sc->sc_dev, "fw2x> F/W capabilities=%s\n", buf);
 
 	return 0;
 }
@@ -2324,8 +2317,7 @@ fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
 		mpi_ctrl &= ~(FW2X_CTRL_PAUSE | FW2X_CTRL_ASYMMETRIC_PAUSE);
 		break;
 	default:
-		device_printf(sc->sc_dev,
-		    "fw2x> unknown MPI state %d\n", mode);
+		device_printf(sc->sc_dev, "fw2x> unknown MPI state %d\n", mode);
 		return EINVAL;
 	}
 
@@ -2450,8 +2442,7 @@ aq_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
 	uint32_t v;
 	int error = 0;
 
-	WAIT_FOR(AQ_READ_REG(sc, AQ_FW_SEM_RAM_REG) == 1,
-	    1, 10000, &error);
+	WAIT_FOR(AQ_READ_REG(sc, AQ_FW_SEM_RAM_REG) == 1, 1, 10000, &error);
 	if (error != 0) {
 		AQ_WRITE_REG(sc, AQ_FW_SEM_RAM_REG, 1);
 		v = AQ_READ_REG(sc, AQ_FW_SEM_RAM_REG);
@@ -2470,12 +2461,10 @@ aq_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
 		AQ_WRITE_REG_BIT(sc, AQ_FW_MBOX_CMD_REG,
 		    AQ_FW_MBOX_CMD_EXECUTE, 1);
 		if (sc->sc_features & FEATURES_REV_B1) {
-			WAIT_FOR(
-			    AQ_READ_REG(sc, AQ_FW_MBOX_ADDR_REG) != addr,
+			WAIT_FOR(AQ_READ_REG(sc, AQ_FW_MBOX_ADDR_REG) != addr,
 			    1, 1000, &error);
 		} else {
-			WAIT_FOR(
-			    (AQ_READ_REG(sc, AQ_FW_MBOX_CMD_REG) &
+			WAIT_FOR((AQ_READ_REG(sc, AQ_FW_MBOX_CMD_REG) &
 			    AQ_FW_MBOX_CMD_BUSY) == 0,
 			    1, 1000, &error);
 		}
@@ -2548,12 +2537,9 @@ aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
 		return 0;
 	}
 
-	h = (enaddr[0] << 8) |
-	    (enaddr[1]);
-	l = (enaddr[2] << 24) |
-	    (enaddr[3] << 16) |
-	    (enaddr[4] << 8) |
-	    (enaddr[5]);
+	h = (enaddr[0] <<  8) | (enaddr[1]);
+	l = (enaddr[2] << 24) | (enaddr[3] << 16) |
+	    (enaddr[4] <<  8) | (enaddr[5]);
 
 	/* disable, set, and enable */
 	AQ_WRITE_REG_BIT(sc, RPF_L2UC_MSW_REG(index), RPF_L2UC_MSW_EN, 0);
@@ -3209,8 +3195,7 @@ aq_init_rss(struct aq_softc *sc)
 #endif
 
 		WAIT_FOR(AQ_READ_REG_BIT(sc, RPF_RSS_REDIR_ADDR_REG,
-		   RPF_RSS_REDIR_WR_EN) == 0,
-		    1000, 10, &error);
+		    RPF_RSS_REDIR_WR_EN) == 0, 1000, 10, &error);
 		if (error != 0)
 			break;
 	}
@@ -3276,8 +3261,7 @@ aq_hw_init(struct aq_softc *sc)
 
 	/* Force limit MRRS on RDM/TDM to 2K */
 	v = AQ_READ_REG(sc, AQ_PCI_REG_CONTROL_6_REG);
-	AQ_WRITE_REG(sc, AQ_PCI_REG_CONTROL_6_REG,
-	    (v & ~0x0707) | 0x0404);
+	AQ_WRITE_REG(sc, AQ_PCI_REG_CONTROL_6_REG, (v & ~0x0707) | 0x0404);
 
 	/*
 	 * TX DMA total request limit. B0 hardware is not capable to
@@ -3552,8 +3536,7 @@ aq_txring_alloc(struct aq_softc *sc, struct aq_txring *txring)
 #define AQ_NTXSEGS	32
 		/* XXX: TODO: error check */
 		bus_dmamap_create(sc->sc_dmat, AQ_MAXDMASIZE, AQ_NTXSEGS,
-		    AQ_MAXDMASIZE, 0, 0,
-		    &txring->txr_mbufs[i].dmamap);
+		    AQ_MAXDMASIZE, 0, 0, &txring->txr_mbufs[i].dmamap);
 	}
 	return 0;
 }
@@ -3620,8 +3603,7 @@ aq_rxring_alloc(struct aq_softc *sc, struct aq_rxring *rxring)
 	for (i = 0; i < AQ_RXD_NUM; i++) {
 		rxring->rxr_mbufs[i].m = NULL;
 		/* XXX: TODO: error check */
-		bus_dmamap_create(sc->sc_dmat, MCLBYTES, 1,
-		    MCLBYTES, 0, 0,
+		bus_dmamap_create(sc->sc_dmat, MCLBYTES, 1, MCLBYTES, 0, 0,
 		    &rxring->rxr_mbufs[i].dmamap);
 	}
 	return 0;
@@ -4229,11 +4211,8 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 #ifdef XXX_TXDESC_DEBUG
 		printf("TXring[%d].desc[%d] seg:%d/%d buf_addr=%012lx,"
 		    " len=%-5lu ctl1=%08x ctl2=%08x%s\n",
-		    txring->txr_index,
-		    idx,
-		    i, map->dm_nsegs - 1,
-		    map->dm_segs[i].ds_addr,
-		    map->dm_segs[i].ds_len,
+		    txring->txr_index, idx, i, map->dm_nsegs - 1,
+		    map->dm_segs[i].ds_addr, map->dm_segs[i].ds_len,
 		    ctl1, ctl2,
 		    (i == map->dm_nsegs - 1) ? " EOP/WB" : "");
 #endif
@@ -4286,8 +4265,7 @@ aq_tx_intr(void *arg)
 	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(ringidx),
 	    TX_DMA_DESC_HEAD_PTR),
 	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(ringidx)),
-	    txring->txr_prodidx,
-	    txring->txr_considx);
+	    txring->txr_prodidx, txring->txr_considx);
 #endif
 
 	for (idx = txring->txr_considx; idx != hw_head;
@@ -4300,9 +4278,7 @@ aq_tx_intr(void *arg)
 		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(ringidx),
 		    TX_DMA_DESC_HEAD_PTR),
 		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(ringidx)),
-		    txring->txr_considx,
-		    txring->txr_prodidx,
-		    idx);
+		    txring->txr_considx, txring->txr_prodidx, idx);
 #endif
 
 #ifdef XXX_TXDESC_MORE_DEBUG
@@ -4391,8 +4367,7 @@ aq_rx_intr(void *arg)
 
 #ifdef XXX_RXINTR_DEBUG
 	printf("%s:%d: begin: readidx=%u, RX_DMA_DESC_HEAD/TAIL=%lu/%u\n",
-	    __func__, __LINE__,
-	    rxring->rxr_readidx,
+	    __func__, __LINE__, rxring->rxr_readidx,
 	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx),
 	    RX_DMA_DESC_HEAD_PTR),
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
@@ -4519,17 +4494,14 @@ aq_rx_intr(void *arg)
 			printf("RXring[%d].desc[%d]\n    pktlen=%u,"
 			    " type=0x%x(sph=%ld, hdrlen=%ld), status=0x%x"
 			    "(DD=%lu, EOP=%lu, ERR=%lu), nextdsc=%u, vlan=%u\n",
-			    ringidx, idx,
-			    rxd_pktlen,
-			    rxd_type,
+			    ringidx, idx, rxd_pktlen, rxd_type,
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN),
 			    rxd_status,
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_DD),
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_EOP),
 			    __SHIFTOUT(rxd_status, RXDESC_STATUS_MACERR),
-			    rxd_nextdescptr,
-			    rxd_vlan);
+			    rxd_nextdescptr, rxd_vlan);
 
 			printf("    rsstype=0x%lx(%s), RssHash=0x%08x,"
 			    " pkttype_vlan=%lu/%lu, pkttype_eth=%u(%s),"
@@ -4539,10 +4511,8 @@ aq_rx_intr(void *arg)
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
 			    __SHIFTOUT(rxd_type,
 			    RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE),
-			    pkttype_eth,
-			    pkttype_eth_table[pkttype_eth],
-			    pkttype_proto,
-			    pkttype_proto_table[pkttype_proto]);
+			    pkttype_eth, pkttype_eth_table[pkttype_eth],
+			    pkttype_proto, pkttype_proto_table[pkttype_proto]);
 
 			printf("    IPv4chked=%ld,%s, TCPUDPchked=%ld,%s,%s\n",
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED),
@@ -4606,10 +4576,8 @@ aq_rx_intr(void *arg)
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
 			    __SHIFTOUT(rxd_type,
 			    RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE),
-			    pkttype_eth,
-			    pkttype_eth_table[pkttype_eth],
-			    pkttype_proto,
-			    pkttype_proto_table[pkttype_proto]);
+			    pkttype_eth, pkttype_eth_table[pkttype_eth],
+			    pkttype_proto, pkttype_proto_table[pkttype_proto]);
 		}
 #endif
 
@@ -5010,12 +4978,9 @@ aq_dump_mactable(struct aq_softc *sc)
 		printf("MAC TABLE[%d] %02x:%02x:%02x:%02x:%02x:%02x"
 		    " enable=%d, actf=%ld%s\n",
 		    i,
-		    (h >> 8) & 0xff,
-		    h & 0xff,
-		    (l >> 24) & 0xff,
-		    (l >> 16) & 0xff,
-		    (l >> 8) & 0xff,
-		    l & 0xff,
+		    (h >> 8) & 0xff, h & 0xff,
+		    (l >> 24) & 0xff, (l >> 16) & 0xff,
+		    (l >> 8) & 0xff, l & 0xff,
 		    (h & RPF_L2UC_MSW_EN) ? 1 : 0,
 		    AQ_READ_REG_BIT(sc,
 		    RPF_L2UC_MSW_REG(i), RPF_L2UC_MSW_ACTION),
