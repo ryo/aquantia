@@ -413,7 +413,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_RSS_REDIR_WR_DATA			__BITS(15,0)
 
 #define RPO_HWCSUM_REG				0x5580
-#define  RPO_HWCSUM_IPV4CSUM_EN			__BIT(1)
+#define  RPO_HWCSUM_IP4CSUM_EN			__BIT(1)
 #define  RPO_HWCSUM_L4CSUM_EN			__BIT(0) /* TCP/UDP/SCTP */
 
 #define RPO_LRO_ENABLE_REG			0x5590
@@ -525,7 +525,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_HW_RXBUF_MAX		320
 
 #define TPO_HWCSUM_REG				0x7800
-#define  TPO_HWCSUM_IPV4CSUM_EN			__BIT(1)
+#define  TPO_HWCSUM_IP4CSUM_EN			__BIT(1)
 #define  TPO_HWCSUM_L4CSUM_EN			__BIT(0) /* TCP/UDP/SCTP */
 
 #define TDM_LSO_EN_REG				0x7810
@@ -904,7 +904,7 @@ typedef struct aq_tx_desc {
 #define AQ_TXDESC_CTL1_EOP		__BIT(21)	/* TXD */
 #define AQ_TXDESC_CTL1_CMD_VLAN		__BIT(22)	/* TXD */
 #define AQ_TXDESC_CTL1_CMD_FCS		__BIT(23)	/* TXD */
-#define AQ_TXDESC_CTL1_CMD_IPV4CSUM	__BIT(24)	/* TXD */
+#define AQ_TXDESC_CTL1_CMD_IP4CSUM	__BIT(24)	/* TXD */
 #define AQ_TXDESC_CTL1_CMD_L4CSUM	__BIT(25)	/* TXD */
 #define AQ_TXDESC_CTL1_CMD_LSO		__BIT(26)	/* TXD */
 #define AQ_TXDESC_CTL1_CMD_WB		__BIT(27)	/* TXD */
@@ -1111,7 +1111,8 @@ static int aq_ifmedia_change(struct ifnet * const);
 static void aq_ifmedia_status(struct ifnet * const, struct ifmediareq *);
 static int aq_ifflags_cb(struct ethercom *);
 static int aq_init(struct ifnet *);
-static void aq_send_common_locked(struct ifnet *, struct aq_softc *, struct aq_txring *, bool);
+static void aq_send_common_locked(struct ifnet *, struct aq_softc *,
+    struct aq_txring *, bool);
 static int aq_transmit(struct ifnet *, struct mbuf *);
 static void aq_deferred_transmit(void *);
 static void aq_start(struct ifnet *);
@@ -2563,9 +2564,9 @@ static int
 aq_set_capability(struct aq_softc *sc)
 {
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	int ipv4csum_tx =
-	   ((ifp->if_capenable & IFCAP_CSUM_IPv4_Tx) == 0) ? 0 : 1;
-	int ipv4csum_rx =
+	int ip4csum_tx =
+	    ((ifp->if_capenable & IFCAP_CSUM_IPv4_Tx) == 0) ? 0 : 1;
+	int ip4csum_rx =
 	    ((ifp->if_capenable & IFCAP_CSUM_IPv4_Rx) == 0) ? 0 : 1;
 	int l4csum_tx = ((ifp->if_capenable &
 	   (IFCAP_CSUM_TCPv4_Tx | IFCAP_CSUM_UDPv4_Tx |
@@ -2581,16 +2582,12 @@ aq_set_capability(struct aq_softc *sc)
 	uint32_t i, v;
 
 	/* TX checksums offloads*/
-	AQ_WRITE_REG_BIT(sc, TPO_HWCSUM_REG,
-	    TPO_HWCSUM_IPV4CSUM_EN, ipv4csum_tx);
-	AQ_WRITE_REG_BIT(sc, TPO_HWCSUM_REG,
-	    TPO_HWCSUM_L4CSUM_EN, l4csum_tx);
+	AQ_WRITE_REG_BIT(sc, TPO_HWCSUM_REG, TPO_HWCSUM_IP4CSUM_EN, ip4csum_tx);
+	AQ_WRITE_REG_BIT(sc, TPO_HWCSUM_REG, TPO_HWCSUM_L4CSUM_EN, l4csum_tx);
 
 	/* RX checksums offloads*/
-	AQ_WRITE_REG_BIT(sc, RPO_HWCSUM_REG,
-	    RPO_HWCSUM_IPV4CSUM_EN, ipv4csum_rx);
-	AQ_WRITE_REG_BIT(sc, RPO_HWCSUM_REG,
-	    RPO_HWCSUM_L4CSUM_EN, l4csum_rx);
+	AQ_WRITE_REG_BIT(sc, RPO_HWCSUM_REG, RPO_HWCSUM_IP4CSUM_EN, ip4csum_rx);
+	AQ_WRITE_REG_BIT(sc, RPO_HWCSUM_REG, RPO_HWCSUM_L4CSUM_EN, l4csum_rx);
 
 	/* LSO offloads*/
 	AQ_WRITE_REG(sc, TDM_LSO_EN_REG, lso);
@@ -3848,7 +3845,8 @@ aq_tx_pcq_alloc(struct aq_softc *sc, struct aq_txring *txring)
 	txring->txr_pcq = pcq_create(AQ_TXD_NUM, KM_NOSLEEP);
 	if (txring->txr_pcq == NULL) {
 		aprint_error_dev(sc->sc_dev,
-		    "unable to allocate pcq for TXring[%d]\n", txring->txr_index);
+		    "unable to allocate pcq for TXring[%d]\n",
+		    txring->txr_index);
 		error = ENOMEM;
 		goto done;
 	}
@@ -3857,7 +3855,8 @@ aq_tx_pcq_alloc(struct aq_softc *sc, struct aq_txring *txring)
 	    aq_deferred_transmit, txring);
 	if (txring->txr_softint == NULL) {
 		aprint_error_dev(sc->sc_dev,
-		    "unable to establish softint for TXring[%d]\n", txring->txr_index);
+		    "unable to establish softint for TXring[%d]\n",
+		    txring->txr_index);
 		error = ENOENT;
 	}
 
@@ -4045,8 +4044,7 @@ aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 	if (start) {
 		/* TX descriptor physical address */
 		paddr_t paddr = txring->txr_txdesc_dmamap->dm_segs[0].ds_addr;
-		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRLSW_REG(ringidx),
-		    paddr);
+		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRLSW_REG(ringidx), paddr);
 		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRMSW_REG(ringidx),
 		    (uint32_t)((uint64_t)paddr >> 32));
 
@@ -4109,8 +4107,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 
 		/* RX descriptor physical address */
 		paddr_t paddr = rxring->rxr_rxdesc_dmamap->dm_segs[0].ds_addr;
-		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRLSW_REG(ringidx),
-		    paddr);
+		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRLSW_REG(ringidx), paddr);
 		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRMSW_REG(ringidx),
 		    (uint32_t)((uint64_t)paddr >> 32));
 
@@ -4240,7 +4237,7 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	}
 
 	if (m->m_pkthdr.csum_flags & M_CSUM_IPv4)
-		ctl1_ctx |= AQ_TXDESC_CTL1_CMD_IPV4CSUM;
+		ctl1_ctx |= AQ_TXDESC_CTL1_CMD_IP4CSUM;
 	if (m->m_pkthdr.csum_flags &
 	    (M_CSUM_TCPv4 | M_CSUM_UDPv4 | M_CSUM_TCPv6 | M_CSUM_UDPv6)) {
 		ctl1_ctx |= AQ_TXDESC_CTL1_CMD_L4CSUM;
@@ -4465,12 +4462,15 @@ aq_rx_intr(void *arg)
 			    " ipv4checked=%u, tcpudpchecked=%u,"
 			    " sph=%u, hdrlen=%u\n",
 			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
-			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_MAC_DMA_ERR),
-			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED),
+			    (uint32_t)__SHIFTOUT(rxd_type,
+			    RXDESC_TYPE_MAC_DMA_ERR),
+			    (uint32_t)__SHIFTOUT(rxd_type,
+			    RXDESC_TYPE_IPV4_CSUM_CHECKED),
 			    (uint32_t)__SHIFTOUT(rxd_type,
 			    RXDESC_TYPE_TCPUDP_CSUM_CHECKED),
 			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
-			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
+			    (uint32_t)__SHIFTOUT(rxd_type,
+			    RXDESC_TYPE_HDR_LEN));
 #endif
 			goto rx_next;
 		}
@@ -4513,19 +4513,19 @@ aq_rx_intr(void *arg)
 			unsigned int pkttype_eth =
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_ETHER);
 
-			const char *ipv4csumstatus = "?";
+			const char *ip4csumstatus = "?";
 			if (pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) {
 				if (__SHIFTOUT(rxd_type,
 				    RXDESC_TYPE_IPV4_CSUM_CHECKED)) {
-					ipv4csumstatus = "ipv4 checked";
+					ip4csumstatus = "ipv4 checked";
 					if (__SHIFTOUT(rxd_status,
 					    RXDESC_STATUS_IPV4_CSUM_NG) == 0) {
-						ipv4csumstatus = "ipv4 csum OK";
+						ip4csumstatus = "ipv4 csum OK";
 					} else {
-						ipv4csumstatus = "ipv4 csum NG";
+						ip4csumstatus = "ipv4 csum NG";
 					}
 				} else {
-					ipv4csumstatus = "ipv4 not checked";
+					ip4csumstatus = "ipv4 not checked";
 				}
 			}
 			const char *tcpudp_csumstatus = "?";
@@ -4582,8 +4582,8 @@ aq_rx_intr(void *arg)
 			    RXDESC_STATUS_TCPUDP_CSUM_ERROR) ? "ERR" : "NoERR",
 			    __SHIFTOUT(rxd_status,
 			    RXDESC_STATUS_TCPUDP_CSUM_OK) ? "OK" : "NG");
-			printf("    ipv4csumstatus=%s, tcpudp_csumstatus=%s\n",
-			    ipv4csumstatus, tcpudp_csumstatus);
+			printf("    ip4csumstatus=%s, tcpudp_csumstatus=%s\n",
+			    ip4csumstatus, tcpudp_csumstatus);
 		}
 #endif /* XXX_RXDESC_DEBUG */
 
@@ -4629,9 +4629,10 @@ aq_rx_intr(void *arg)
 			    " RssHash=0x%08x, pkttype_vlan=%u/%u,"
 			    " pkttype_eth=%u(%s), pkttype_proto=%u(%s)\n",
 			    ringidx, idx,
-			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE), rsstype,
-			    rxd_hash,
-			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
+			    rsstype, rxd_hash,
+			    (uint32_t)__SHIFTOUT(rxd_type,
+			    RXDESC_TYPE_PKTTYPE_VLAN),
 			    (uint32_t)__SHIFTOUT(rxd_type,
 			    RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE),
 			    pkttype_eth, pkttype_eth_table[pkttype_eth],
@@ -4880,7 +4881,8 @@ aq_init(struct ifnet *ifp)
 }
 
 static void
-aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc, struct aq_txring *txring, bool is_transmit)
+aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc,
+    struct aq_txring *txring, bool is_transmit)
 {
 	struct mbuf *m;
 	int npkt, error;
