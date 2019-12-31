@@ -166,8 +166,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 					/* TX + RX + LINK. must be <= 32 */
 #define AQ_LINKSTAT_IRQ			31	/* for legacy mode */
 
-#define AQ_TXD_NUM			2048	/* per ring. 8*n && <= 8184 */
-#define AQ_RXD_NUM			2048	/* per ring. 8*n && <= 8184 */
+#define AQ_TXD_NUM			2048	/* per ring. 8*n && 32~8184 */
+#define AQ_RXD_NUM			2048	/* per ring. 8*n && 32~8184 */
 /* minimum required to send a packet (vlan needs additional TX descriptor) */
 #define AQ_TXD_MIN			(1 + 1)
 
