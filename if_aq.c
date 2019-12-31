@@ -1348,10 +1348,15 @@ aq_attach(device_t parent, device_t self, void *aux)
 	}
 
 	aprint_debug_dev(sc->sc_dev,
-	    "ncpu=%d, pci_msix_count=%d -> nqueues=%d%s, linkstat_intr=%d\n",
-	    ncpu, msixcount, sc->sc_nqueues,
+	    "ncpu=%d, pci_msix_count=%d."
+	    " allocate %d interrupts for %d%s queues%s\n",
+	    ncpu, msixcount,
+	    (sc->sc_use_txrx_independent_intr ?
+	    (sc->sc_nqueues * 2) : sc->sc_nqueues) +
+	    (sc->sc_poll_linkstat ? 0 : 1),
+	    sc->sc_nqueues,
 	    sc->sc_use_txrx_independent_intr ? "*2" : "",
-	    sc->sc_poll_linkstat ? 0 : 1);
+	    sc->sc_poll_linkstat ? "" : ", and link status");
 
 #ifdef XXX_NO_MSIX
 	sc->sc_msix = false;
