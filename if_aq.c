@@ -642,7 +642,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 	"b\x34" "PTP-AVB\0"		\
 	"b\x35" "MEDIA-DETECT\0"	\
 	"b\x36" "LINK-DROP\0"		\
-	"b\x37" "SLEE-PROXY\0"		\
+	"b\x37" "SLEEP-PROXY\0"		\
 	"b\x38" "WOL\0"			\
 	"b\x39" "MAC-STOP\0"		\
 	"b\x3a" "EXT-LOOPBACK\0"	\
