@@ -824,12 +824,12 @@ typedef enum aq_link_eee {
 	AQ_EEE_ENABLE = 1
 } aq_link_eee_t;
 
-typedef enum aq_hw_fw_mpi_state_e {
+typedef enum aq_hw_fw_mpi_state {
 	MPI_DEINIT	= 0,
 	MPI_RESET	= 1,
 	MPI_INIT	= 2,
 	MPI_POWER	= 4
-} aq_hw_fw_mpi_state_e_t;
+} aq_hw_fw_mpi_state_t;
 
 enum aq_media_type {
 	AQ_MEDIA_TYPE_UNKNOWN = 0,
@@ -967,9 +967,9 @@ struct aq_queue {
 struct aq_softc;
 struct aq_firmware_ops {
 	int (*reset)(struct aq_softc *);
-	int (*set_mode)(struct aq_softc *, aq_hw_fw_mpi_state_e_t,
+	int (*set_mode)(struct aq_softc *, aq_hw_fw_mpi_state_t,
 	    aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
-	int (*get_mode)(struct aq_softc *, aq_hw_fw_mpi_state_e_t *,
+	int (*get_mode)(struct aq_softc *, aq_hw_fw_mpi_state_t *,
 	    aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
 	int (*get_stats)(struct aq_softc *, aq_hw_stats_s_t *);
 };
@@ -1152,16 +1152,16 @@ static int aq_init_rss(struct aq_softc *);
 static int aq_set_capability(struct aq_softc *);
 
 static int fw1x_reset(struct aq_softc *);
-static int fw1x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t,
+static int fw1x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_t,
     aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
-static int fw1x_get_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t *,
+static int fw1x_get_mode(struct aq_softc *, aq_hw_fw_mpi_state_t *,
     aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
 static int fw1x_get_stats(struct aq_softc *, aq_hw_stats_s_t *);
 
 static int fw2x_reset(struct aq_softc *);
-static int fw2x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t,
+static int fw2x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_t,
     aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
-static int fw2x_get_mode(struct aq_softc *, aq_hw_fw_mpi_state_e_t *,
+static int fw2x_get_mode(struct aq_softc *, aq_hw_fw_mpi_state_t *,
     aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
 static int fw2x_get_stats(struct aq_softc *, aq_hw_stats_s_t *);
 
@@ -2186,7 +2186,7 @@ fw1x_reset(struct aq_softc *sc)
 }
 
 static int
-fw1x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
+fw1x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_t mode,
     aq_link_speed_t speed, aq_link_fc_t fc, aq_link_eee_t eee)
 {
 	uint32_t mpictrl = 0;
@@ -2210,7 +2210,7 @@ fw1x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
 }
 
 static int
-fw1x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *modep,
+fw1x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_t *modep,
     aq_link_speed_t *speedp, aq_link_fc_t *fcp, aq_link_eee_t *eeep)
 {
 	uint32_t mpistate, mpi_speed;
@@ -2289,7 +2289,7 @@ fw2x_reset(struct aq_softc *sc)
 }
 
 static int
-fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
+fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_t mode,
     aq_link_speed_t speed, aq_link_fc_t fc, aq_link_eee_t eee)
 {
 	uint64_t mpi_ctrl = AQ_READ64_REG(sc, FW2X_MPI_CONTROL_REG);
@@ -2334,7 +2334,7 @@ fw2x_set_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t mode,
 }
 
 static int
-fw2x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *modep,
+fw2x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_t *modep,
     aq_link_speed_t *speedp, aq_link_fc_t *fcp, aq_link_eee_t *eeep)
 {
 	uint64_t mpi_state = AQ_READ64_REG(sc, FW2X_MPI_STATE_REG);
@@ -2833,7 +2833,7 @@ static int
 aq_get_linkmode(struct aq_softc *sc, aq_link_speed_t *speed, aq_link_fc_t *fc,
    aq_link_eee_t *eee)
 {
-	aq_hw_fw_mpi_state_e_t mode;
+	aq_hw_fw_mpi_state_t mode;
 	int error;
 
 	error = sc->sc_fw_ops->get_mode(sc, &mode, speed, fc, eee);
