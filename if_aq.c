@@ -939,6 +939,12 @@ struct aq_txring {
 	unsigned int txr_prodidx;
 	unsigned int txr_considx;
 	int txr_nfree;
+
+	/* counters */
+	uint64_t txr_opackets;
+	uint64_t txr_obytes;
+	uint64_t txr_omcasts;
+	uint64_t txr_oerrors;
 };
 
 struct aq_rxring {
@@ -956,6 +962,12 @@ struct aq_rxring {
 		bus_dmamap_t dmamap;
 	} rxr_mbufs[AQ_RXD_NUM];
 	unsigned int rxr_readidx;
+
+	/* counters */
+	uint64_t rxr_ipackets;
+	uint64_t rxr_ibytes;
+	uint64_t rxr_ierrors;
+	uint64_t rxr_iqdrops;
 };
 
 struct aq_queue {
@@ -4293,6 +4305,7 @@ aq_tx_intr(void *arg)
 	struct aq_txring *txring = arg;
 	struct aq_softc *sc = txring->txr_sc;
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	struct mbuf *m;
 	const int ringidx = txring->txr_index;
 	unsigned int idx, hw_head, n = 0;
 
@@ -4356,12 +4369,17 @@ aq_tx_intr(void *arg)
 		    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
 #endif
 
-		if (txring->txr_mbufs[idx].m != NULL) {
+		if ((m = txring->txr_mbufs[idx].m) != NULL) {
 			bus_dmamap_unload(sc->sc_dmat,
 			    txring->txr_mbufs[idx].dmamap);
-			m_freem(txring->txr_mbufs[idx].m);
+
+			txring->txr_opackets++;
+			txring->txr_obytes += m->m_pkthdr.len;
+			if (m->m_flags & M_MCAST)
+				txring->txr_omcasts++;
+
+			m_freem(m);
 			txring->txr_mbufs[idx].m = NULL;
-			ifp->if_opackets++;
 		}
 
 		txring->txr_nfree++;
@@ -4449,7 +4467,7 @@ aq_rx_intr(void *arg)
 
 		if ((rxd_status & RXDESC_STATUS_MACERR) ||
 		    (rxd_type & RXDESC_TYPE_MAC_DMA_ERR)) {
-			ifp->if_ierrors++;
+			rxring->rxr_ierrors++;
 #ifdef XXX_RXDESC_DEBUG
 			device_printf(sc->sc_dev,
 			    "DMA_ERR: desc[%d] type=0x%08x, hash=0x%08x,"
@@ -4651,6 +4669,7 @@ aq_rx_intr(void *arg)
 			 * cannot allocate new mbuf.
 			 * discard this packet, and reuse mbuf for next.
 			 */
+			rxring->rxr_iqdrops++;
 			goto rx_next;
 		}
 		rxring->rxr_mbufs[idx].m = NULL;
@@ -4757,10 +4776,10 @@ aq_rx_intr(void *arg)
 				}
 			}
 #endif
-
 			m_set_rcvif(m0, ifp);
+			rxring->rxr_ipackets++;
+			rxring->rxr_ibytes += m0->m_pkthdr.len;
 			if_percpuq_enqueue(ifp->if_percpuq, m0);
-
 			m0 = mprev = NULL;
 		}
 
@@ -4922,7 +4941,7 @@ aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc,
 		if (error != 0) {
 			/* too many mbuf chains? or not enough descriptors? */
 			m_freem(m);
-			ifp->if_oerrors++;
+			txring->txr_oerrors++;
 			if (txring->txr_index == 0 && error == ENOBUFS)
 				ifp->if_flags |= IFF_OACTIVE;
 			break;
@@ -5103,11 +5122,60 @@ aq_ioctl(struct ifnet *ifp, unsigned long cmd, void *data)
 {
 	struct aq_softc *sc __unused;
 	struct ifreq *ifr __unused;
-	int error, s;
+	uint64_t opackets, oerrors, obytes, omcasts;
+	uint64_t ipackets, ierrors, ibytes, iqdrops;
+	int error, i, s;
 
 	sc = (struct aq_softc *)ifp->if_softc;
 	ifr = (struct ifreq *)data;
 	error = 0;
+
+	switch (cmd) {
+	case SIOCGIFDATA:
+	case SIOCZIFDATA:
+		opackets = oerrors = obytes = omcasts = 0;
+		ipackets = ierrors = ibytes = iqdrops = 0;
+		for (i = 0; i < sc->sc_nqueues; i++) {
+			struct aq_txring *txring = &sc->sc_queue[i].txring;
+			mutex_enter(&txring->txr_mutex);
+			if (cmd == SIOCZIFDATA) {
+				txring->txr_opackets = 0;
+				txring->txr_obytes = 0;
+				txring->txr_omcasts = 0;
+				txring->txr_oerrors = 0;
+			} else {
+				opackets += txring->txr_opackets;
+				oerrors += txring->txr_oerrors;
+				obytes += txring->txr_obytes;
+				omcasts += txring->txr_omcasts;
+			}
+			mutex_exit(&txring->txr_mutex);
+
+			struct aq_rxring *rxring = &sc->sc_queue[i].rxring;
+			mutex_enter(&rxring->rxr_mutex);
+			if (cmd == SIOCZIFDATA) {
+				rxring->rxr_ipackets = 0;
+				rxring->rxr_ibytes = 0;
+				rxring->rxr_ierrors = 0;
+				rxring->rxr_iqdrops = 0;
+			} else {
+				ipackets += rxring->rxr_ipackets;
+				ierrors += rxring->rxr_ierrors;
+				ibytes += rxring->rxr_ibytes;
+				iqdrops += rxring->rxr_iqdrops;
+			}
+			mutex_exit(&rxring->rxr_mutex);
+		}
+		ifp->if_opackets = opackets;
+		ifp->if_oerrors = oerrors;
+		ifp->if_obytes = obytes;
+		ifp->if_omcasts = omcasts;
+		ifp->if_ipackets = ipackets;
+		ifp->if_ierrors = ierrors;
+		ifp->if_ibytes = ibytes;
+		ifp->if_iqdrops = iqdrops;
+		break;
+	}
 
 	s = splnet();
 	error = ether_ioctl(ifp, cmd, data);
