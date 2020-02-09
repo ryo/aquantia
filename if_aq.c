@@ -62,7 +62,7 @@
 //#define XXX_DUMP_RSSKEY
 //#define XXX_ONLY_8_DESCRIPTOR_TEST
 
-/*	$NetBSD: if_aq.c,v 1.5 2020/01/25 07:57:48 msaitoh Exp $	*/
+/*	$NetBSD: if_aq.c,v 1.8 2020/02/08 07:19:09 maxv Exp $	*/
 
 /**
  * aQuantia Corporation Network Driver
@@ -126,7 +126,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.5 2020/01/25 07:57:48 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.8 2020/02/08 07:19:09 maxv Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_if_aq.h"
@@ -944,12 +944,6 @@ struct aq_txring {
 	unsigned int txr_prodidx;
 	unsigned int txr_considx;
 	int txr_nfree;
-
-	/* counters */
-	uint64_t txr_opackets;
-	uint64_t txr_obytes;
-	uint64_t txr_omcasts;
-	uint64_t txr_oerrors;
 };
 
 struct aq_rxring {
@@ -967,12 +961,6 @@ struct aq_rxring {
 		bus_dmamap_t dmamap;
 	} rxr_mbufs[AQ_RXD_NUM];
 	unsigned int rxr_readidx;
-
-	/* counters */
-	uint64_t rxr_ipackets;
-	uint64_t rxr_ibytes;
-	uint64_t rxr_ierrors;
-	uint64_t rxr_iqdrops;
 };
 
 struct aq_queue {
@@ -1062,7 +1050,7 @@ struct aq_softc {
 	kmutex_t sc_mutex;
 	kmutex_t sc_mpi_mutex;
 
-	struct aq_firmware_ops *sc_fw_ops;
+	const struct aq_firmware_ops *sc_fw_ops;
 	uint64_t sc_fw_caps;
 	enum aq_media_type sc_media_type;
 	aq_link_speed_t sc_available_rates;
@@ -1202,7 +1190,7 @@ static int fw2x_get_stats(struct aq_softc *, aq_hw_stats_s_t *);
 static int fw2x_get_temperature(struct aq_softc *, uint32_t *);
 #endif
 
-static struct aq_firmware_ops aq_fw1x_ops = {
+static const struct aq_firmware_ops aq_fw1x_ops = {
 	.reset = fw1x_reset,
 	.set_mode = fw1x_set_mode,
 	.get_mode = fw1x_get_mode,
@@ -1212,7 +1200,7 @@ static struct aq_firmware_ops aq_fw1x_ops = {
 #endif
 };
 
-static struct aq_firmware_ops aq_fw2x_ops = {
+static const struct aq_firmware_ops aq_fw2x_ops = {
 	.reset = fw2x_reset,
 	.set_mode = fw2x_set_mode,
 	.get_mode = fw2x_get_mode,
@@ -1680,6 +1668,8 @@ aq_detach(device_t self, int flags __unused)
 	AQ_EVCNT_DETACH(sc, dpc);
 	AQ_EVCNT_DETACH(sc, cprc);
 #endif
+
+	ifmedia_fini(&sc->sc_media);
 
 	mutex_destroy(&sc->sc_mpi_mutex);
 	mutex_destroy(&sc->sc_mutex);
@@ -4465,6 +4455,8 @@ aq_tx_intr(void *arg)
 	    txring->txr_prodidx, txring->txr_considx);
 #endif
 
+	net_stat_ref_t nsr = IF_STAT_GETREF(ifp);
+
 	for (idx = txring->txr_considx; idx != hw_head;
 	    idx = TXRING_NEXTIDX(idx), n++) {
 
@@ -4504,10 +4496,10 @@ aq_tx_intr(void *arg)
 			bus_dmamap_unload(sc->sc_dmat,
 			    txring->txr_mbufs[idx].dmamap);
 
-			txring->txr_opackets++;
-			txring->txr_obytes += m->m_pkthdr.len;
+			if_statinc_ref(nsr, if_opackets);
+			if_statadd_ref(nsr, if_obytes, m->m_pkthdr.len);
 			if (m->m_flags & M_MCAST)
-				txring->txr_omcasts++;
+				if_statinc_ref(nsr, if_omcasts);
 
 			m_freem(m);
 			txring->txr_mbufs[idx].m = NULL;
@@ -4516,6 +4508,8 @@ aq_tx_intr(void *arg)
 		txring->txr_nfree++;
 	}
 	txring->txr_considx = idx;
+
+	IF_STAT_PUTREF(ifp);
 
 	if (ringidx == 0 && txring->txr_nfree >= AQ_TXD_MIN)
 		ifp->if_flags &= ~IFF_OACTIVE;
@@ -4575,6 +4569,8 @@ aq_rx_intr(void *arg)
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
 
+	net_stat_ref_t nsr = IF_STAT_GETREF(ifp);
+
 	m0 = mprev = NULL;
 	for (idx = rxring->rxr_readidx;
 	    idx != AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx),
@@ -4598,7 +4594,7 @@ aq_rx_intr(void *arg)
 
 		if ((rxd_status & RXDESC_STATUS_MACERR) ||
 		    (rxd_type & RXDESC_TYPE_MAC_DMA_ERR)) {
-			rxring->rxr_ierrors++;
+			if_statinc_ref(nsr, if_ierrors);
 #ifdef XXX_RXDESC_DEBUG
 			device_printf(sc->sc_dev,
 			    "DMA_ERR: desc[%d] type=0x%08x, hash=0x%08x,"
@@ -4800,7 +4796,7 @@ aq_rx_intr(void *arg)
 			 * cannot allocate new mbuf.
 			 * discard this packet, and reuse mbuf for next.
 			 */
-			rxring->rxr_iqdrops++;
+			if_statinc_ref(nsr, if_iqdrops);
 			goto rx_next;
 		}
 		rxring->rxr_mbufs[idx].m = NULL;
@@ -4908,8 +4904,8 @@ aq_rx_intr(void *arg)
 			}
 #endif
 			m_set_rcvif(m0, ifp);
-			rxring->rxr_ipackets++;
-			rxring->rxr_ibytes += m0->m_pkthdr.len;
+			if_statinc_ref(nsr, if_ipackets);
+			if_statadd_ref(nsr, if_ibytes, m0->m_pkthdr.len);
 			if_percpuq_enqueue(ifp->if_percpuq, m0);
 			m0 = mprev = NULL;
 		}
@@ -4927,6 +4923,8 @@ aq_rx_intr(void *arg)
 	    RX_DMA_DESC_HEAD_PTR),
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
+
+	IF_STAT_PUTREF(ifp);
 
  rx_intr_done:
 	mutex_exit(&rxring->rxr_mutex);
@@ -5072,7 +5070,7 @@ aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc,
 		if (error != 0) {
 			/* too many mbuf chains? or not enough descriptors? */
 			m_freem(m);
-			txring->txr_oerrors++;
+			if_statinc(ifp, if_oerrors);
 			if (txring->txr_index == 0 && error == ENOBUFS)
 				ifp->if_flags |= IFF_OACTIVE;
 			break;
@@ -5253,60 +5251,11 @@ aq_ioctl(struct ifnet *ifp, unsigned long cmd, void *data)
 {
 	struct aq_softc *sc __unused;
 	struct ifreq *ifr __unused;
-	uint64_t opackets, oerrors, obytes, omcasts;
-	uint64_t ipackets, ierrors, ibytes, iqdrops;
-	int error, i, s;
+	int error, s;
 
 	sc = (struct aq_softc *)ifp->if_softc;
 	ifr = (struct ifreq *)data;
 	error = 0;
-
-	switch (cmd) {
-	case SIOCGIFDATA:
-	case SIOCZIFDATA:
-		opackets = oerrors = obytes = omcasts = 0;
-		ipackets = ierrors = ibytes = iqdrops = 0;
-		for (i = 0; i < sc->sc_nqueues; i++) {
-			struct aq_txring *txring = &sc->sc_queue[i].txring;
-			mutex_enter(&txring->txr_mutex);
-			if (cmd == SIOCZIFDATA) {
-				txring->txr_opackets = 0;
-				txring->txr_obytes = 0;
-				txring->txr_omcasts = 0;
-				txring->txr_oerrors = 0;
-			} else {
-				opackets += txring->txr_opackets;
-				oerrors += txring->txr_oerrors;
-				obytes += txring->txr_obytes;
-				omcasts += txring->txr_omcasts;
-			}
-			mutex_exit(&txring->txr_mutex);
-
-			struct aq_rxring *rxring = &sc->sc_queue[i].rxring;
-			mutex_enter(&rxring->rxr_mutex);
-			if (cmd == SIOCZIFDATA) {
-				rxring->rxr_ipackets = 0;
-				rxring->rxr_ibytes = 0;
-				rxring->rxr_ierrors = 0;
-				rxring->rxr_iqdrops = 0;
-			} else {
-				ipackets += rxring->rxr_ipackets;
-				ierrors += rxring->rxr_ierrors;
-				ibytes += rxring->rxr_ibytes;
-				iqdrops += rxring->rxr_iqdrops;
-			}
-			mutex_exit(&rxring->rxr_mutex);
-		}
-		ifp->if_opackets = opackets;
-		ifp->if_oerrors = oerrors;
-		ifp->if_obytes = obytes;
-		ifp->if_omcasts = omcasts;
-		ifp->if_ipackets = ipackets;
-		ifp->if_ierrors = ierrors;
-		ifp->if_ibytes = ibytes;
-		ifp->if_iqdrops = iqdrops;
-		break;
-	}
 
 	s = splnet();
 	error = ether_ioctl(ifp, cmd, data);
