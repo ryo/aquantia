@@ -218,6 +218,8 @@ __KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.12 2020/04/22 22:54:43 christos Exp $");
 #define AQ_FW_MBOX_ADDR_REG			0x0208
 #define AQ_FW_MBOX_VAL_REG			0x020c
 
+#define AQ_FW_GLB_CPU_SCRATCHPAD_REG(i)		(0x0300 + (i) * 4)
+
 #define FW2X_LED_MIN_VERSION			0x03010026	/* >= 3.1.38 */
 #define FW2X_LED_REG				0x031c
 #define  FW2X_LED_DEFAULT			0x00000000
@@ -234,6 +236,15 @@ __KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.12 2020/04/22 22:54:43 christos Exp $");
 #define   FW2X_STATUSLED_GREEN			4
 #define   FW2X_STATUSLED_ORANGE_GREEN_BLINK	8
 #define   FW2X_STATUSLED_GREEN_BLINK		10
+
+#define FW2X_B1_MBOX_VAL_REG			0x0328
+#define FW2X_B1_MBOX_ADDR_REG			0x032c
+
+#define FW_MPI_RPC_ADDR_REG			0x0334
+#define FW_RPC_CONTROL_REG			0x0338
+#define FW_RPC_STATE_REG			0x033c
+#define  FW_RPC_STATE_LENGTH			__BITS(31,16)
+#define  FW_RPC_STATE_TRANSACTION_ID		__BITS(16,0)
 
 #define FW_MPI_MBOX_ADDR_REG			0x0360
 #define FW1X_MPI_INIT1_REG			0x0364
@@ -613,11 +624,11 @@ __KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.12 2020/04/22 22:54:43 christos Exp $");
 #define FW2X_CTRL_2P5GBASET_FD_EEE		__BIT(41)
 #define FW2X_CTRL_5GBASET_FD_EEE		__BIT(42)
 #define FW2X_CTRL_10GBASET_FD_EEE		__BIT(43)
-#define FW2X_CTRL_RESERVED5			__BIT(44)
-#define FW2X_CTRL_RESERVED6			__BIT(45)
-#define FW2X_CTRL_RESERVED7			__BIT(46)
-#define FW2X_CTRL_RESERVED8			__BIT(47)
-#define FW2X_CTRL_RESERVED9			__BIT(48)
+#define FW2X_CTRL_THERMAL_SHUTDOWN		__BIT(44)
+#define FW2X_CTRL_PHY_LOGS			__BIT(45)
+#define FW2X_CTRL_EEE_AUTO_DISABLE		__BIT(46)
+#define FW2X_CTRL_PFC				__BIT(47)
+#define FW2X_CTRL_WAKE_ON_LINK			__BIT(48)
 #define FW2X_CTRL_CABLE_DIAG			__BIT(49)
 #define FW2X_CTRL_TEMPERATURE			__BIT(50)
 #define FW2X_CTRL_DOWNSHIFT			__BIT(51)
@@ -638,6 +649,7 @@ __KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.12 2020/04/22 22:54:43 christos Exp $");
 	"\177\020"			\
 	"b\x23" "PAUSE\0"		\
 	"b\x24" "ASYMMETRIC-PAUSE\0"	\
+	"b\x2c" "FW-REQUEST\0"		\
 	"b\x31" "CABLE-DIAG\0"		\
 	"b\x32" "TEMPERATURE\0"		\
 	"b\x33" "DOWNSHIFT\0"		\
@@ -688,13 +700,13 @@ typedef enum aq_fw_bootloader_mode {
 	bus_space_read_4((sc)->sc_iot, (sc)->sc_ioh, (reg))
 
 #define AQ_READ64_REG(sc, reg)					\
-	((uint64_t)AQ_READ_REG(sc, reg) |			\
+	((uint64_t)AQ_READ_REG(sc, (reg)) |			\
 	(((uint64_t)AQ_READ_REG(sc, (reg) + 4)) << 32))
 
 #define AQ_WRITE64_REG(sc, reg, val)				\
 	do {							\
-		AQ_WRITE_REG(sc, reg, (uint32_t)val);		\
-		AQ_WRITE_REG(sc, reg + 4, (uint32_t)(val >> 32)); \
+		AQ_WRITE_REG(sc, reg, (uint32_t)(val));		\
+		AQ_WRITE_REG(sc, reg + 4, (uint32_t)((val) >> 32)); \
 	} while (/* CONSTCOND */0)
 
 #define AQ_READ_REG_BIT(sc, reg, mask)				\
@@ -802,8 +814,43 @@ typedef struct fw2x_mailbox {		/* struct fwHostInterface */
 
 	fw2x_capabilities_t caps;
 
-	/* ... */
+	uint32_t datapath;
+	uint32_t reserved2[7];
+	uint32_t response[3];
+	uint32_t linkstat[7];
+	uint32_t wakes_count;
+	uint32_t eee_stat[12];
+	uint32_t tx_stuck_count;
+	uint32_t setting_address;
+	uint32_t setting_length;
+	uint32_t caps_ex;
+	uint32_t gpio_pin[3];
+	uint32_t pcie_aer[18];
+	uint16_t snr_margin[4];
+
 } __packed fw2x_mailbox_t;
+
+struct aq_fw_rpc_common {
+	uint32_t msgid;
+};
+
+struct aq_fw_rpc_offloadinfo {
+	uint32_t msgid;
+
+	uint32_t version;
+	uint32_t length;	/* sizeof(struct aq_fw_rpc_offloadinfo) - 4 */
+	uint8_t mac_addr[ETHER_ADDR_LEN];
+	uint8_t reserved[2];
+	uint8_t ipinfo[20];
+	uint8_t portinfo[12];
+	uint8_t kainfo[20];
+	uint8_t rrinfo[16];
+} __packed;
+
+union aq_fw_rpc {
+	struct aq_fw_rpc_common rpc_common;
+	struct aq_fw_rpc_offloadinfo rpc_offload;
+};
 
 typedef enum aq_link_speed {
 	AQ_LINK_NONE	= 0,
@@ -977,6 +1024,7 @@ struct aq_firmware_ops {
 	int (*get_mode)(struct aq_softc *, aq_hw_fw_mpi_state_t *,
 	    aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
 	int (*get_stats)(struct aq_softc *, aq_hw_stats_s_t *);
+	int (*set_wol)(struct aq_softc *, bool);
 #if NSYSMON_ENVSYS > 0
 	int (*get_temperature)(struct aq_softc *, uint32_t *);
 #endif
@@ -1034,6 +1082,7 @@ struct aq_softc {
 	envsys_data_t sc_sensor_temp;
 #endif
 
+	bool sc_tick_initted;
 	callout_t sc_tick_ch;
 
 	int sc_nintrs;
@@ -1074,6 +1123,10 @@ struct aq_softc {
 #define FEATURES_REV_B1		0x40000000
 #define FEATURES_REV_B		(FEATURES_REV_B0|FEATURES_REV_B1)
 	uint32_t sc_mbox_addr;
+	uint32_t sc_rpc_addr;
+
+	union aq_fw_rpc sc_rpc_buf;
+	uint32_t sc_rpc_len;
 
 	bool sc_rbl_enabled;
 	bool sc_fast_start_enabled;
@@ -1185,6 +1238,7 @@ static int fw2x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_t,
 static int fw2x_get_mode(struct aq_softc *, aq_hw_fw_mpi_state_t *,
     aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
 static int fw2x_get_stats(struct aq_softc *, aq_hw_stats_s_t *);
+static int fw2x_set_wol(struct aq_softc *, bool);
 #if NSYSMON_ENVSYS > 0
 static int fw2x_get_temperature(struct aq_softc *, uint32_t *);
 #endif
@@ -1194,6 +1248,7 @@ static const struct aq_firmware_ops aq_fw1x_ops = {
 	.set_mode = fw1x_set_mode,
 	.get_mode = fw1x_get_mode,
 	.get_stats = fw1x_get_stats,
+	.set_wol = NULL,
 #if NSYSMON_ENVSYS > 0
 	.get_temperature = NULL
 #endif
@@ -1204,6 +1259,7 @@ static const struct aq_firmware_ops aq_fw2x_ops = {
 	.set_mode = fw2x_set_mode,
 	.get_mode = fw2x_get_mode,
 	.get_stats = fw2x_get_stats,
+	.set_wol = fw2x_set_wol,
 #if NSYSMON_ENVSYS > 0
 	.get_temperature = fw2x_get_temperature
 #endif
@@ -1435,6 +1491,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	if (error != 0)
 		return;
 
+	sc->sc_tick_initted = true;
 	callout_init(&sc->sc_tick_ch, 0);
 	callout_setfunc(&sc->sc_tick_ch, aq_tick, sc);
 
@@ -1579,6 +1636,12 @@ aq_attach(device_t parent, device_t self, void *aux)
 	}
 #endif
 
+#if 0 /* XXX: broken */
+	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->set_wol != NULL) {
+		sc->sc_fw_ops->set_wol(sc, true);
+	}
+#endif
+
 #ifdef AQ_EVENT_COUNTERS
 	/* get starting statistics values */
 	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_stats != NULL &&
@@ -1651,7 +1714,8 @@ aq_detach(device_t self, int flags __unused)
 		sc->sc_iosize = 0;
 	}
 
-	callout_stop(&sc->sc_tick_ch);
+	if (sc->sc_tick_initted)
+		callout_stop(&sc->sc_tick_ch);
 
 #if NSYSMON_ENVSYS > 0
 	if (sc->sc_sme != NULL) {
@@ -1682,7 +1746,10 @@ aq_detach(device_t self, int flags __unused)
 	AQ_EVCNT_DETACH(sc, cprc);
 #endif
 
-	ifmedia_fini(&sc->sc_media);
+	if (sc->sc_ethercom.ec_ifmedia != NULL) {
+		sc->sc_ethercom.ec_ifmedia = NULL;
+		ifmedia_fini(&sc->sc_media);
+	}
 
 	mutex_destroy(&sc->sc_mpi_mutex);
 	mutex_destroy(&sc->sc_mutex);
@@ -2157,6 +2224,14 @@ aq_hw_init_ucp(struct aq_softc *sc)
 		delay(1000);
 	}
 
+	for (timo = 100; timo > 0; timo--) {
+		sc->sc_rpc_addr = AQ_READ_REG(sc, FW_MPI_RPC_ADDR_REG);
+		if (sc->sc_rpc_addr != 0)
+			break;
+		delay(1000);
+	}
+	printf("XXX: sc_rpc_addr=%08x\n", sc->sc_rpc_addr);
+
 #define AQ_FW_MIN_VERSION	0x01050006
 #define AQ_FW_MIN_VERSION_STR	"1.5.6"
 	if (sc->sc_fw_version < AQ_FW_MIN_VERSION) {
@@ -2535,6 +2610,165 @@ fw2x_get_stats(struct aq_softc *sc, aq_hw_stats_s_t *stats)
 	return error;
 }
 
+static int
+aq_fw_config_write_dwords(struct aq_softc *sc, uint32_t *p, uint32_t cnt)
+{
+	uint32_t i;
+	int error;
+
+	WAIT_FOR(AQ_READ_REG(sc, AQ_FW_SEM_RAM_REG) == 1, 1, 10000, &error);
+	if (error != 0)
+		return error;
+
+	if ((sc->sc_features & FEATURES_REV_B1) == 0)
+		panic("not supported except REV B1");
+
+	for (i = 0; i < cnt; i++) {
+		AQ_WRITE_REG(sc, FW2X_B1_MBOX_VAL_REG, p[i]);
+		AQ_WRITE_REG(sc, FW2X_B1_MBOX_ADDR_REG,
+		    0x80000000 | ((i * 4) & 0xffff));
+		AQ_WRITE_REG_BIT(sc, AQ_FW_GLB_CTL2_REG,
+		    AQ_FW_GLB_CTL2_MCP_UP_FORCE_INTERRUPT, 1);
+		WAIT_FOR((AQ_READ_REG(sc, AQ_FW_GLB_CPU_SCRATCHPAD_REG(11)) &
+		     0xf0000000) != 0x80000000, 10, 10000, &error);
+	}
+
+	AQ_WRITE_REG(sc, AQ_FW_SEM_RAM_REG, 1);
+	return 0;
+}
+
+static int
+aq_fw_rpc_call(struct aq_softc *sc, void *msg, uint32_t len)
+{
+	uint32_t tid;
+
+	KASSERT(len <= sizeof(sc->sc_rpc_buf));
+
+	if ((sc->sc_features & FEATURES_MIPS) == 0) {
+		printf("XXX: %s:%d: NO MIPS\n", __func__, __LINE__);
+		return ENOTSUP;
+	}
+
+	/* keep last rpc to retry */
+	if (msg != &sc->sc_rpc_buf) {
+		memcpy(&sc->sc_rpc_buf, msg, len);
+		sc->sc_rpc_len = len;
+	}
+
+	aq_fw_config_write_dwords(sc, msg,
+	    (len + sizeof(uint32_t) - 1) / sizeof(uint32_t));
+
+	tid = __SHIFTOUT(AQ_READ_REG(sc, FW_RPC_CONTROL_REG),
+	    FW_RPC_STATE_TRANSACTION_ID);
+
+	printf("XXX: %s:%d: tid=%08x\n", __func__, __LINE__, tid);
+
+	tid = (tid + 1) & 0xffff;
+
+	printf("XXX: %s:%d: tid=%08x (new)\n", __func__, __LINE__, tid);
+
+	AQ_WRITE_REG(sc, FW_RPC_CONTROL_REG,
+	    __SHIFTIN(len, FW_RPC_STATE_LENGTH) |
+	    __SHIFTIN(tid, FW_RPC_STATE_TRANSACTION_ID));
+
+	return 0;
+}
+
+static int
+aq_fw_rpc_wait(struct aq_softc *sc, uint32_t *msgidp)
+{
+	uint32_t ctrl, state;
+	int n, error = 0;
+
+#define AQ_RPC_NRETRY	100
+	for (n = AQ_RPC_NRETRY; n > 0; n--) {
+		ctrl = AQ_READ_REG(sc, FW_RPC_CONTROL_REG);
+		WAIT_FOR(
+		    (state = AQ_READ_REG(sc, FW_RPC_STATE_REG) &
+		    FW_RPC_STATE_TRANSACTION_ID) ==
+		    (ctrl & FW_RPC_STATE_TRANSACTION_ID),
+		    1000, 100000, &error);
+
+		if (error == ETIMEDOUT)
+			continue;
+
+		/* if last rpc failed, retry */
+		if (__SHIFTOUT(state, FW_RPC_STATE_LENGTH) == 0xffff) {
+			/* redo last rpc */
+			error = aq_fw_rpc_call(sc, &sc->sc_rpc_buf, sc->sc_rpc_len);
+			if (error != 0)
+				return error;
+			continue;
+		}
+	}
+	if (n <= 0) {
+		device_printf(sc->sc_dev, "fw rpc timeout\n");
+		return error;
+	}
+
+	if (msgidp != NULL)
+		*msgidp = sc->sc_rpc_buf.rpc_common.msgid;
+
+	printf("XXX: %s:%d: msgid=%08x\n", __func__, __LINE__, sc->sc_rpc_buf.rpc_common.msgid);
+
+	return 0;
+}
+
+static int
+fw2x_set_wol(struct aq_softc *sc, bool enable)
+{
+	/* XXX: doesn't work yet... */
+
+	uint64_t mpi_ctrl, mpi_stat;
+	int error = 0;
+
+	AQ_MPI_LOCK(sc);
+
+	mpi_ctrl = AQ_READ64_REG(sc, FW2X_MPI_CONTROL_REG);
+	mpi_stat = AQ_READ64_REG(sc, FW2X_MPI_STATE_REG);
+	printf("MPI CONTROL/STAT=%08lx/%08lx\n", mpi_ctrl, mpi_stat);
+	printf("PROXY/WOL: ctrl=%lx/%lx, stat=%lx/%lx\n",
+	    mpi_ctrl & FW2X_CTRL_SLEEP_PROXY,
+	    mpi_ctrl & FW2X_CTRL_WOL,
+	    mpi_stat & FW2X_CTRL_SLEEP_PROXY,
+	    mpi_stat & FW2X_CTRL_WOL);
+
+	if (enable) {
+		struct aq_fw_rpc_offloadinfo rpc_offload;
+		uint32_t msgid = 0;
+
+		error = aq_fw_rpc_wait(sc, &msgid);
+		if (error != 0)
+			goto done;
+
+		memset(&rpc_offload, 0, sizeof(rpc_offload));
+		rpc_offload.msgid = msgid;
+		rpc_offload.length = sizeof(struct aq_fw_rpc_offloadinfo) - 4;
+		memcpy(rpc_offload.mac_addr, sc->sc_enaddr.ether_addr_octet,
+		    ETHER_ADDR_LEN);
+
+		error = aq_fw_rpc_call(sc, &rpc_offload, sizeof(rpc_offload));
+		if (error != 0)
+			goto done;
+
+		AQ_WRITE64_REG(sc, FW2X_MPI_CONTROL_REG,
+		    FW2X_CTRL_SLEEP_PROXY | FW2X_CTRL_WOL);
+	}
+
+	mpi_ctrl = AQ_READ64_REG(sc, FW2X_MPI_CONTROL_REG);
+	mpi_stat = AQ_READ64_REG(sc, FW2X_MPI_STATE_REG);
+	printf("result: MPI CONTROL/STAT=%08lx/%08lx\n", mpi_ctrl, mpi_stat);
+	printf("result: PROXY/WOL: ctrl=%lx/%lx, stat=%lx/%lx\n",
+	    mpi_ctrl & FW2X_CTRL_SLEEP_PROXY,
+	    mpi_ctrl & FW2X_CTRL_WOL,
+	    mpi_stat & FW2X_CTRL_SLEEP_PROXY,
+	    mpi_stat & FW2X_CTRL_WOL);
+
+ done:
+	AQ_MPI_UNLOCK(sc);
+	return error;
+}
+
 #if NSYSMON_ENVSYS > 0
 static int
 fw2x_get_temperature(struct aq_softc *sc, uint32_t *temp)
@@ -2635,7 +2869,7 @@ aq_get_mac_addr(struct aq_softc *sc)
 
 	memset(mac_addr, 0, sizeof(mac_addr));
 	err = aq_fw_downld_dwords(sc, efuse_shadow_addr + (40 * 4),
-	    mac_addr, __arraycount(mac_addr));
+	    mac_addr, sizeof(mac_addr) / sizeof(uint32_t));
 	if (err < 0)
 		return err;
 
