@@ -62,7 +62,7 @@
 //#define XXX_DUMP_RSSKEY
 //#define XXX_ONLY_8_DESCRIPTOR_TEST
 
-/*	$NetBSD: if_aq.c,v 1.11 2020/02/15 12:20:35 ryo Exp $	*/
+/*	$NetBSD: if_aq.c,v 1.12 2020/04/22 22:54:43 christos Exp $	*/
 
 /**
  * aQuantia Corporation Network Driver
@@ -126,7 +126,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.11 2020/02/15 12:20:35 ryo Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.12 2020/04/22 22:54:43 christos Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_if_aq.h"
@@ -1219,6 +1219,10 @@ static const struct aq_product {
 	enum aq_media_type aq_media_type;
 	aq_link_speed_t aq_available_rates;
 } aq_products[] = {
+	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC100,
+	  "Aquantia AQC100 10 Gigabit Network Adapter",
+	  AQ_MEDIA_TYPE_FIBRE, AQ_LINK_ALL
+	},
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC107,
 	  "Aquantia AQC107 10 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_ALL
@@ -1386,6 +1390,14 @@ aq_attach(device_t parent, device_t self, void *aux)
 		/* giving up using MSI-X */
 		sc->sc_msix = false;
 	}
+
+	/* XXX: on FIBRE, linkstat interrupt does not occur on boot? */
+	if (aqp->aq_media_type == AQ_MEDIA_TYPE_FIBRE)
+		sc->sc_poll_linkstat = true;
+
+#ifdef AQ_FORCE_POLL_LINKSTAT
+	sc->sc_poll_linkstat = true;
+#endif
 
 	aprint_debug_dev(sc->sc_dev,
 	    "ncpu=%d, pci_msix_count=%d."
