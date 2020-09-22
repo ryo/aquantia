@@ -2652,8 +2652,8 @@ aq_get_mac_addr(struct aq_softc *sc)
 		return ENXIO;
 	}
 
-	mac_addr[0] = bswap32(mac_addr[0]);
-	mac_addr[1] = bswap32(mac_addr[1]);
+	mac_addr[0] = htobe32(mac_addr[0]);
+	mac_addr[1] = htobe32(mac_addr[1]);
 
 	memcpy(sc->sc_enaddr.ether_addr_octet,
 	    (uint8_t *)mac_addr, ETHER_ADDR_LEN);
