@@ -62,7 +62,7 @@
 //#define XXX_DUMP_RSSKEY
 //#define XXX_ONLY_8_DESCRIPTOR_TEST
 
-/*	$NetBSD: if_aq.c,v 1.14 2020/04/23 06:28:34 ryo Exp $	*/
+/*	$NetBSD: if_aq.c,v 1.17 2020/05/14 08:34:18 msaitoh Exp $	*/
 
 /**
  * aQuantia Corporation Network Driver
@@ -126,7 +126,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.14 2020/04/23 06:28:34 ryo Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.17 2020/05/14 08:34:18 msaitoh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_if_aq.h"
@@ -1017,7 +1017,7 @@ struct aq_softc {
 	bus_space_tag_t sc_iot;
 	bus_space_handle_t sc_ioh;
 	bus_size_t sc_iosize;
-	bus_dma_tag_t sc_dmat;;
+	bus_dma_tag_t sc_dmat;
 
 	void *sc_ihs[AQ_NINTR_MAX];
 	pci_intr_handle_t *sc_intrs;
@@ -1243,6 +1243,10 @@ static const struct aq_product {
 	  "Aquantia AQC112 2.5 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_100M | AQ_LINK_1G | AQ_LINK_2G5
 	},
+	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC100S,
+	  "Aquantia AQC100S 10 Gigabit Network Adapter",
+	  AQ_MEDIA_TYPE_FIBRE, AQ_LINK_ALL
+	},
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC107S,
 	  "Aquantia AQC107S 10 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_ALL
@@ -1262,6 +1266,10 @@ static const struct aq_product {
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_AQC112S,
 	  "Aquantia AQC112S 2.5 Gigabit Network Adapter",
 	  AQ_MEDIA_TYPE_TP, AQ_LINK_100M | AQ_LINK_1G | AQ_LINK_2G5
+	},
+	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_D100,
+	  "Aquantia D100 10 Gigabit Network Adapter",
+	  AQ_MEDIA_TYPE_FIBRE, AQ_LINK_ALL
 	},
 	{ PCI_VENDOR_AQUANTIA, PCI_PRODUCT_AQUANTIA_D107,
 	  "Aquantia D107 10 Gigabit Network Adapter",
