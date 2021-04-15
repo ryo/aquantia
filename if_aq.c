@@ -5032,6 +5032,8 @@ aq_init(struct ifnet *ifp)
 	struct aq_softc *sc = ifp->if_softc;
 	int i, error = 0;
 
+	aq_stop(ifp, false);
+
 	AQ_LOCK(sc);
 
 	aq_set_vlan_filters(sc);
@@ -5220,6 +5222,9 @@ aq_stop(struct ifnet *ifp, int disable)
 
 	ifp->if_timer = 0;
 
+	if ((ifp->if_flags & IFF_RUNNING) == 0)
+		goto already_stopped;
+
 	/* disable tx/rx interrupts */
 	aq_enable_intr(sc, true, false);
 
@@ -5240,6 +5245,7 @@ aq_stop(struct ifnet *ifp, int disable)
 
 	ifp->if_timer = 0;
 
+ already_stopped:
 	if (!disable) {
 		/* when pmf stop, disable link status intr and callout */
 		aq_enable_intr(sc, false, false);
