@@ -1537,11 +1537,11 @@ aq_attach(device_t parent, device_t self, void *aux)
 	ifp->if_capabilities |= IFCAP_TSOv4 | IFCAP_TSOv6;
 #endif
 
-	/* TX hardware checksum offloadding */
+	/* TX hardware checksum offloading */
 	ifp->if_capabilities |= IFCAP_CSUM_IPv4_Tx;
 	ifp->if_capabilities |= IFCAP_CSUM_TCPv4_Tx | IFCAP_CSUM_TCPv6_Tx;
 	ifp->if_capabilities |= IFCAP_CSUM_UDPv4_Tx | IFCAP_CSUM_UDPv6_Tx;
-	/* RX hardware checksum offloadding */
+	/* RX hardware checksum offloading */
 	ifp->if_capabilities |= IFCAP_CSUM_IPv4_Rx;
 	ifp->if_capabilities |= IFCAP_CSUM_TCPv4_Rx | IFCAP_CSUM_TCPv6_Rx;
 	ifp->if_capabilities |= IFCAP_CSUM_UDPv4_Rx | IFCAP_CSUM_UDPv6_Rx;
