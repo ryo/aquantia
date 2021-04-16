@@ -4648,6 +4648,16 @@ aq_rx_intr(void *arg)
 		rxd_hash = le32toh(rxd->wb.rss_hash);
 		rxd_vlan = le16toh(rxd->wb.vlan);
 
+#ifdef XXX_RXDESC_DEBUG
+		printf("rxd.%d[%d].type=%08x, hash=%08x, status=%04x, pkt_len=%u, ndp=%u, vlan=%u\n", ringidx, idx,
+		    le32toh(rxd->wb.type),
+		    le32toh(rxd->wb.rss_hash),
+		    le16toh(rxd->wb.status),
+		    le16toh(rxd->wb.pkt_len),
+		    le16toh(rxd->wb.next_desc_ptr),
+		    le16toh(rxd->wb.vlan));
+#endif
+
 		if ((rxd_status & RXDESC_STATUS_MACERR) ||
 		    (rxd_type & RXDESC_TYPE_MAC_DMA_ERR)) {
 			if_statinc_ref(nsr, if_ierrors);
@@ -4874,7 +4884,10 @@ aq_rx_intr(void *arg)
 #endif
 		} else {
 			/* last buffer */
-			m->m_len = rxd_pktlen % MCLBYTES;
+			int mlen = rxd_pktlen % MCLBYTES;
+			if (mlen == 0)
+				mlen = MCLBYTES;
+			m->m_len = mlen;
 			m0->m_pkthdr.len = rxd_pktlen;
 #ifdef XXX_DUMP_RX_MBUF
 			hexdump(printf, "mbuf (EOP)", m->m_data, m->m_len);
