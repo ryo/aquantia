@@ -1,40 +1,28 @@
 //COMMENT:	
-//COMMENT:	 PROBLEM
-//COMMENT:		謎条件で、pingをとりこぼしまくる。attachしてすぐにIP addressを設定すると起きやすい? 初期化問題?
-//COMMENT:			→どうやらaq_update_link_status()でRPB_RXB_XOFF_ENをセットしていたからっぽい? 0固定で良いっぽい。
-//COMMENT:			→まだ起きるっぽい。detach && attach するとなおる(少くともring_num=1,8のとき起きた)
-//COMMENT:			→RX_DMA_HEADは書き換え不可だった。でもこれを修正してもまだ落とすことがある？？？
-//COMMENT:	
-//COMMENT:		iperfのudpが極端に遅い。落としまくってる? 他のNICでも起きるのでaqの問題ではなさそう。
-//COMMENT:	
 //COMMENT:	
 //COMMENT:	 MEMO?
 //COMMENT:		VLANIDで16ヶのringに振り分け可能?
 //COMMENT:		ETHERTYPEで16ヶのringに振り分け可能?
 //COMMENT:		L3 filterはで8ヶのringに振り分け可能?
 //COMMENT:			（Linux版のAQ_RX_FIRST_LOC_FVLANIDあたりの定義より）
-//COMMENT:		そうだとすると、RX_FLR_RSS_CONTROL1_REG の 0x33333333 の意味がなんとなくわかる(0b11が8ヶ=8ring分)
+//COMMENT:		→ RX_FLR_RSS_CONTROL1_REG の 0x33333333 は 0b11が8ヶ=8ring分?
 //COMMENT:	
-//COMMENT:		L3-L4フィルタはその名の通り、discardするかhostのどのringで受けるかを決めるテーブルであり、rssとは関係ないようだ。
-//COMMENT:	
-//COMMENT:		RSS_ENABLEの状態だと0800と8d66が届かないけど、statistics的には受信している
-//COMMENT:		そしてUDPはちゃんと受信している。(たぶんL3 filterでUDP throughにしてるせい)
-//COMMENT:	
+//COMMENT:		L3-L4フィルタはその名の通り、discardするかhostのどのringで受けるかを決めるテーブルであり、rssとは関係ない
 //COMMENT:	
 //COMMENT:	
 //COMMENT:	 TODO
-//COMMENT:		lock
-//COMMENT:		vlan hw filter
-//COMMENT:	
-//COMMENT:		hardware offloading (LRO,TSO,RX-L4CSUM problem)
-//COMMENT:		ifp counters
-//COMMENT:		cleanup source
-//COMMENT:		fulldup control? (100baseTX)
+//COMMENT:		hardware offloading (LRO,TSO)
 //COMMENT:		IP header offset 4n+2問題
-//COMMENT:		fw1x (revision A0)
 //COMMENT:		tuning
 //COMMENT:	
+//COMMENT:	
 //COMMENT:	 DONE
+//COMMENT:		hardware offloading (RX-csum)
+//COMMENT:		fw1x (revision A0)
+//COMMENT:		vlan hw filter
+//COMMENT:		ifp counters
+//COMMENT:		hardware offloading (TX-csum)
+//COMMENT:		lock
 //COMMENT:		interrupt moderation
 //COMMENT:		vlan
 //COMMENT:		rss
@@ -62,7 +50,7 @@
 //#define XXX_DUMP_RSSKEY
 //#define XXX_ONLY_8_DESCRIPTOR_TEST
 
-/*	$NetBSD: if_aq.c,v 1.26 2021/06/13 10:05:39 mlelstv Exp $	*/
+/*	$NetBSD: if_aq.c,v 1.27 2021/06/16 00:21:18 riastradh Exp $	*/
 
 /**
  * aQuantia Corporation Network Driver
@@ -126,7 +114,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.26 2021/06/13 10:05:39 mlelstv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.27 2021/06/16 00:21:18 riastradh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_if_aq.h"
@@ -1546,12 +1534,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	ifp->if_capabilities |= IFCAP_CSUM_TCPv4_Rx | IFCAP_CSUM_TCPv6_Rx;
 	ifp->if_capabilities |= IFCAP_CSUM_UDPv4_Rx | IFCAP_CSUM_UDPv6_Rx;
 
-	error = if_initialize(ifp);
-	if (error != 0) {
-		aprint_error_dev(sc->sc_dev, "if_initialize failed(%d)\n",
-		    error);
-		goto attach_failure;
-	}
+	if_initialize(ifp);
 	ifp->if_percpuq = if_percpuq_create(ifp);
 	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, sc->sc_enaddr.ether_addr_octet);
