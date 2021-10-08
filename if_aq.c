@@ -50,7 +50,7 @@
 //#define XXX_DUMP_RSSKEY
 //#define XXX_ONLY_8_DESCRIPTOR_TEST
 
-/*	$NetBSD: if_aq.c,v 1.27 2021/06/16 00:21:18 riastradh Exp $	*/
+/*	$NetBSD: if_aq.c,v 1.28 2021/10/05 14:18:17 ryo Exp $	*/
 
 /**
  * aQuantia Corporation Network Driver
@@ -114,7 +114,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.27 2021/06/16 00:21:18 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.28 2021/10/05 14:18:17 ryo Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_if_aq.h"
