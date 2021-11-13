@@ -1353,6 +1353,10 @@ aq_attach(device_t parent, device_t self, void *aux)
 		return;
 	}
 
+	error = aq_fw_reset(sc);
+	if (error != 0)
+		goto attach_failure;
+
 	sc->sc_nqueues = MIN(ncpu, AQ_RSSQUEUE_MAX);
 
 	/* max queue num is 8, and must be 2^n */
@@ -1394,8 +1398,9 @@ aq_attach(device_t parent, device_t self, void *aux)
 		sc->sc_msix = false;
 	}
 
-	/* XXX: on FIBRE, linkstat interrupt does not occur on boot? */
-	if (aqp->aq_media_type == AQ_MEDIA_TYPE_FIBRE)
+	/* on FW Ver1 or FIBRE, linkstat interrupt does not occur on boot? */
+	if (aqp->aq_media_type == AQ_MEDIA_TYPE_FIBRE ||
+	    FW_VERSION_MAJOR(sc) == 1)
 		sc->sc_poll_linkstat = true;
 
 #ifdef AQ_FORCE_POLL_LINKSTAT
@@ -1436,7 +1441,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 		error = aq_setup_legacy(sc, pa, PCI_INTR_TYPE_INTX);
 	}
 	if (error != 0)
-		return;
+		goto attach_failure;
 
 	callout_init(&sc->sc_tick_ch, 0);
 	callout_setfunc(&sc->sc_tick_ch, aq_tick, sc);
@@ -1452,10 +1457,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 		sc->sc_rss_enable = false;
 
 	error = aq_txrx_rings_alloc(sc);
-	if (error != 0)
-		goto attach_failure;
-
-	error = aq_fw_reset(sc);
 	if (error != 0)
 		goto attach_failure;
 
