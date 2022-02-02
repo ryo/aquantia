@@ -1073,7 +1073,7 @@ struct aq_softc {
 #define FEATURES_REV_B0		0x20000000
 #define FEATURES_REV_B1		0x40000000
 #define FEATURES_REV_B		(FEATURES_REV_B0|FEATURES_REV_B1)
-	uint32_t sc_max_mtu;
+	int sc_max_mtu;
 	uint32_t sc_mbox_addr;
 
 	bool sc_rbl_enabled;
