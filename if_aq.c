@@ -4112,7 +4112,7 @@ aq_watchdog_check(struct aq_softc * const sc)
 	AQ_LOCKED(sc);
 
 	bool ok = true;
-	for (u_int n = 0; n < sc->sc_nqueues; n++) {
+	for (int n = 0; n < sc->sc_nqueues; n++) {
 		struct aq_txring *txring = &sc->sc_queue[n].txring;
 
 		mutex_enter(&txring->txr_mutex);
@@ -5369,7 +5369,7 @@ aq_unset_stopping_flags(struct aq_softc *sc)
 	AQ_LOCKED(sc);
 
 	/* Must unset stopping flags in ascending order. */
-	for (unsigned i = 0; i < sc->sc_nqueues; i++) {
+	for (int i = 0; i < sc->sc_nqueues; i++) {
 		struct aq_txring *txr = &sc->sc_queue[i].txring;
 		struct aq_rxring *rxr = &sc->sc_queue[i].rxring;
 
@@ -5392,7 +5392,7 @@ aq_set_stopping_flags(struct aq_softc *sc)
 	AQ_LOCKED(sc);
 
 	/* Must unset stopping flags in ascending order. */
-	for (unsigned i = 0; i < sc->sc_nqueues; i++) {
+	for (int i = 0; i < sc->sc_nqueues; i++) {
 		struct aq_txring *txr = &sc->sc_queue[i].txring;
 		struct aq_rxring *rxr = &sc->sc_queue[i].rxring;
 
@@ -5479,7 +5479,7 @@ aq_handle_reset_work(struct work *work, void *arg)
 	    __func__, AQ_READ_REG(sc, AQ_INTR_MASK_REG),
 	    AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
 
-	for (u_int n = 0; n < sc->sc_nqueues; n++) {
+	for (int n = 0; n < sc->sc_nqueues; n++) {
 		struct aq_txring *txring = &sc->sc_queue[n].txring;
 		u_int head = AQ_READ_REG_BIT(sc,
 		    TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index),
