@@ -1177,16 +1177,16 @@ static int aq_set_linkmode(struct aq_softc *, aq_link_speed_t, aq_link_fc_t,
 static int aq_get_linkmode(struct aq_softc *, aq_link_speed_t *, aq_link_fc_t *,
     aq_link_eee_t *);
 
-static int aq_fw_reset(struct aq_softc *);
-static int aq_fw_version_init(struct aq_softc *);
-static int aq_hw_init(struct aq_softc *);
-static int aq_hw_init_ucp(struct aq_softc *);
-static int aq_hw_reset(struct aq_softc *);
-static int aq_fw_downld_dwords(struct aq_softc *, uint32_t, uint32_t *,
+static int aq1_fw_reset(struct aq_softc *);
+static int aq1_fw_version_init(struct aq_softc *);
+static int aq1_hw_init(struct aq_softc *);
+static int aq1_hw_init_ucp(struct aq_softc *);
+static int aq1_hw_reset(struct aq_softc *);
+static int aq1_fw_downld_dwords(struct aq_softc *, uint32_t, uint32_t *,
     uint32_t);
-static int aq_get_mac_addr(struct aq_softc *);
-static int aq_init_rss(struct aq_softc *);
-static int aq_set_capability(struct aq_softc *);
+static int aq1_get_mac_addr(struct aq_softc *);
+static int aq1_init_rss(struct aq_softc *);
+static int aq1_set_capability(struct aq_softc *);
 
 static int fw1x_reset(struct aq_softc *);
 static int fw1x_set_mode(struct aq_softc *, aq_hw_fw_mpi_state_t,
@@ -1380,7 +1380,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 		return;
 	}
 
-	error = aq_fw_reset(sc);
+	error = aq1_fw_reset(sc);
 	if (error != 0)
 		goto attach_failure;
 
@@ -1498,23 +1498,23 @@ aq_attach(device_t parent, device_t self, void *aux)
 	if (error != 0)
 		goto attach_failure;
 
-	error = aq_fw_version_init(sc);
+	error = aq1_fw_version_init(sc);
 	if (error != 0)
 		goto attach_failure;
 
-	error = aq_hw_init_ucp(sc);
+	error = aq1_hw_init_ucp(sc);
 	if (error < 0)
 		goto attach_failure;
 
 	KASSERT(sc->sc_mbox_addr != 0);
-	error = aq_hw_reset(sc);
+	error = aq1_hw_reset(sc);
 	if (error != 0)
 		goto attach_failure;
 
-	aq_get_mac_addr(sc);
-	aq_init_rss(sc);
+	aq1_get_mac_addr(sc);
+	aq1_init_rss(sc);
 
-	error = aq_hw_init(sc);	/* initialize and interrupts */
+	error = aq1_hw_init(sc);	/* initialize and interrupts */
 	if (error != 0)
 		goto attach_failure;
 
@@ -1909,7 +1909,7 @@ aq_setup_legacy(struct aq_softc *sc, struct pci_attach_args *pa,
 }
 
 static void
-global_software_reset(struct aq_softc *sc)
+aq1_global_software_reset(struct aq_softc *sc)
 {
 	uint32_t v;
 
@@ -1925,7 +1925,7 @@ global_software_reset(struct aq_softc *sc)
 }
 
 static int
-mac_soft_reset_rbl(struct aq_softc *sc, aq_fw_bootloader_mode_t *mode)
+aq1_mac_soft_reset_rbl(struct aq_softc *sc, aq_fw_bootloader_mode_t *mode)
 {
 	int timo;
 
@@ -1938,7 +1938,7 @@ mac_soft_reset_rbl(struct aq_softc *sc, aq_fw_bootloader_mode_t *mode)
 	/* MAC FW will reload PHY FW if 1E.1000.3 was cleaned - #undone */
 	AQ_WRITE_REG(sc, FW_BOOT_EXIT_CODE_REG, RBL_STATUS_DEAD);
 
-	global_software_reset(sc);
+	aq1_global_software_reset(sc);
 
 	AQ_WRITE_REG(sc, AQ_FW_GLB_CTL2_REG, 0x40e0);
 
@@ -1979,7 +1979,7 @@ mac_soft_reset_rbl(struct aq_softc *sc, aq_fw_bootloader_mode_t *mode)
 }
 
 static int
-mac_soft_reset_flb(struct aq_softc *sc)
+aq1_mac_soft_reset_flb(struct aq_softc *sc)
 {
 	uint32_t v;
 	int timo;
@@ -2049,7 +2049,7 @@ mac_soft_reset_flb(struct aq_softc *sc)
 	AQ_WRITE_REG(sc, AQ_FW_GLB_CPU_SEM_REG(0), 1);
 
 	/* PHY Kickstart: #undone */
-	global_software_reset(sc);
+	aq1_global_software_reset(sc);
 
 	for (timo = 0; timo < 1000; timo++) {
 		if (AQ_READ_REG(sc, AQ_FW_VERSION_REG) != 0)
@@ -2066,18 +2066,18 @@ mac_soft_reset_flb(struct aq_softc *sc)
 }
 
 static int
-mac_soft_reset(struct aq_softc *sc, aq_fw_bootloader_mode_t *mode)
+aq1_mac_soft_reset(struct aq_softc *sc, aq_fw_bootloader_mode_t *mode)
 {
 	if (sc->sc_rbl_enabled)
-		return mac_soft_reset_rbl(sc, mode);
+		return aq1_mac_soft_reset_rbl(sc, mode);
 
 	if (mode != NULL)
 		*mode = FW_BOOT_MODE_FLB;
-	return mac_soft_reset_flb(sc);
+	return aq1_mac_soft_reset_flb(sc);
 }
 
 static int
-aq_fw_read_version(struct aq_softc *sc)
+aq1_fw_read_version(struct aq_softc *sc)
 {
 	int i, error = EBUSY;
 #define MAC_FW_START_TIMEOUT_MS	10000
@@ -2093,7 +2093,7 @@ aq_fw_read_version(struct aq_softc *sc)
 }
 
 static int
-aq_fw_reset(struct aq_softc *sc)
+aq1_fw_reset(struct aq_softc *sc)
 {
 	uint32_t ver, v, bootExitCode;
 	int i, error;
@@ -2120,14 +2120,14 @@ aq_fw_reset(struct aq_softc *sc)
 	 * 2) Driver may skip reset sequence and save time.
 	 */
 	if (sc->sc_fast_start_enabled && (ver != 0)) {
-		error = aq_fw_read_version(sc);
+		error = aq1_fw_read_version(sc);
 		/* Skip reset as it just completed */
 		if (error == 0)
 			return 0;
 	}
 
 	aq_fw_bootloader_mode_t mode = FW_BOOT_MODE_UNKNOWN;
-	error = mac_soft_reset(sc, &mode);
+	error = aq1_mac_soft_reset(sc, &mode);
 	if (error != 0) {
 		aprint_error_dev(sc->sc_dev, "MAC reset failed: %d\n", error);
 		return error;
@@ -2138,12 +2138,12 @@ aq_fw_reset(struct aq_softc *sc)
 		aprint_debug_dev(sc->sc_dev,
 		    "FLB> F/W successfully loaded from flash.\n");
 		sc->sc_flash_present = true;
-		return aq_fw_read_version(sc);
+		return aq1_fw_read_version(sc);
 	case FW_BOOT_MODE_RBL_FLASH:
 		aprint_debug_dev(sc->sc_dev,
 		    "RBL> F/W loaded from flash. Host Bootload disabled.\n");
 		sc->sc_flash_present = true;
-		return aq_fw_read_version(sc);
+		return aq1_fw_read_version(sc);
 	case FW_BOOT_MODE_UNKNOWN:
 		aprint_error_dev(sc->sc_dev,
 		    "F/W bootload error: unknown bootloader type\n");
@@ -2162,7 +2162,7 @@ aq_fw_reset(struct aq_softc *sc)
 }
 
 static int
-aq_hw_reset(struct aq_softc *sc)
+aq1_hw_reset(struct aq_softc *sc)
 {
 	int error;
 
@@ -2186,7 +2186,7 @@ aq_hw_reset(struct aq_softc *sc)
 }
 
 static int
-aq_hw_init_ucp(struct aq_softc *sc)
+aq1_hw_init_ucp(struct aq_softc *sc)
 {
 	int timo;
 
@@ -2224,7 +2224,7 @@ aq_hw_init_ucp(struct aq_softc *sc)
 }
 
 static int
-aq_fw_version_init(struct aq_softc *sc)
+aq1_fw_version_init(struct aq_softc *sc)
 {
 	int error = 0;
 	char fw_vers[sizeof("F/W version xxxxx.xxxxx.xxxxx")];
@@ -2295,7 +2295,7 @@ fw1x_reset(struct aq_softc *sc)
 		 * Read the beginning of Statistics structure to capture
 		 * the Transaction ID.
 		 */
-		aq_fw_downld_dwords(sc, sc->sc_mbox_addr,
+		aq1_fw_downld_dwords(sc, sc->sc_mbox_addr,
 		    (uint32_t *)&mbox, sizeof(mbox) / sizeof(uint32_t));
 
 		/* Successfully read the stats. */
@@ -2387,7 +2387,7 @@ fw1x_get_stats(struct aq_softc *sc, aq_hw_stats_s_t *stats)
 {
 	int error;
 
-	error = aq_fw_downld_dwords(sc,
+	error = aq1_fw_downld_dwords(sc,
 	    sc->sc_mbox_addr + offsetof(fw1x_mailbox_t, msm), (uint32_t *)stats,
 	    sizeof(aq_hw_stats_s_t) / sizeof(uint32_t));
 	if (error < 0) {
@@ -2407,7 +2407,7 @@ fw2x_reset(struct aq_softc *sc)
 	fw2x_capabilities_t caps = { 0 };
 	int error;
 
-	error = aq_fw_downld_dwords(sc,
+	error = aq1_fw_downld_dwords(sc,
 	    sc->sc_mbox_addr + offsetof(fw2x_mailbox_t, caps),
 	    (uint32_t *)&caps, sizeof caps / sizeof(uint32_t));
 	if (error != 0) {
@@ -2575,7 +2575,7 @@ fw2x_get_stats(struct aq_softc *sc, aq_hw_stats_s_t *stats)
 	}
 
 	CTASSERT(sizeof(fw2x_msm_statistics_t) <= sizeof(struct aq_hw_stats_s));
-	error = aq_fw_downld_dwords(sc,
+	error = aq1_fw_downld_dwords(sc,
 	    sc->sc_mbox_addr + offsetof(fw2x_mailbox_t, msm), (uint32_t *)stats,
 	    sizeof(fw2x_msm_statistics_t) / sizeof(uint32_t));
 	if (error != 0) {
@@ -2605,7 +2605,7 @@ fw2x_get_temperature(struct aq_softc *sc, uint32_t *temp)
 	if (error != 0)
 		goto failure;
 
-	error = aq_fw_downld_dwords(sc,
+	error = aq1_fw_downld_dwords(sc,
 	    sc->sc_mbox_addr + offsetof(fw2x_mailbox_t, phy_info2),
 	    &value, sizeof(value) / sizeof(uint32_t));
 	if (error != 0)
@@ -2626,7 +2626,7 @@ fw2x_get_temperature(struct aq_softc *sc, uint32_t *temp)
 #endif
 
 static int
-aq_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
+aq1_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
     uint32_t cnt)
 {
 	uint32_t v;
@@ -2672,7 +2672,7 @@ aq_fw_downld_dwords(struct aq_softc *sc, uint32_t addr, uint32_t *p,
 
 /* read my mac address */
 static int
-aq_get_mac_addr(struct aq_softc *sc)
+aq1_get_mac_addr(struct aq_softc *sc)
 {
 	uint32_t mac_addr[2];
 	uint32_t efuse_shadow_addr;
@@ -2690,7 +2690,7 @@ aq_get_mac_addr(struct aq_softc *sc)
 	}
 
 	memset(mac_addr, 0, sizeof(mac_addr));
-	err = aq_fw_downld_dwords(sc, efuse_shadow_addr + (40 * 4),
+	err = aq1_fw_downld_dwords(sc, efuse_shadow_addr + (40 * 4),
 	    mac_addr, __arraycount(mac_addr));
 	if (err < 0)
 		return err;
@@ -2713,7 +2713,7 @@ aq_get_mac_addr(struct aq_softc *sc)
 
 /* set multicast filter. index 0 for own address */
 static int
-aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
+aq1_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
 {
 	uint32_t h, l;
 
@@ -2743,7 +2743,7 @@ aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
 }
 
 static int
-aq_set_capability(struct aq_softc *sc)
+aq1_set_capability(struct aq_softc *sc)
 {
 	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
 	int ip4csum_tx =
@@ -2809,7 +2809,7 @@ aq_set_capability(struct aq_softc *sc)
 }
 
 static int
-aq_set_filter(struct aq_softc *sc)
+aq1_set_filter(struct aq_softc *sc)
 {
 	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
 	struct ethercom * const ec = &sc->sc_ethercom;
@@ -2828,7 +2828,7 @@ aq_set_filter(struct aq_softc *sc)
 	for (idx = 0; idx < AQ_HW_MAC_NUM; idx++) {
 		if (idx == AQ_HW_MAC_OWN)	/* already used for own */
 			continue;
-		aq_set_mac_addr(sc, idx, NULL);
+		aq1_set_mac_addr(sc, idx, NULL);
 	}
 
 	/* don't accept all multicast */
@@ -2860,7 +2860,7 @@ aq_set_filter(struct aq_softc *sc)
 		}
 
 		/* add a filter */
-		aq_set_mac_addr(sc, idx++, enm->enm_addrlo);
+		aq1_set_mac_addr(sc, idx++, enm->enm_addrlo);
 
 		ETHER_NEXT_MULTI(step, enm);
 	}
@@ -3268,7 +3268,7 @@ aq_hw_qos_set(struct aq_softc *sc)
 
 /* called once from aq_attach */
 static int
-aq_init_rss(struct aq_softc *sc)
+aq1_init_rss(struct aq_softc *sc)
 {
 	CTASSERT(AQ_RSS_HASHKEY_SIZE == RSS_KEYSIZE);
 	uint32_t rss_key[RSS_KEYSIZE / sizeof(uint32_t)];
@@ -3471,7 +3471,7 @@ aq_set_vlan_filters(struct aq_softc *sc)
 }
 
 static int
-aq_hw_init(struct aq_softc *sc)
+aq1_hw_init(struct aq_softc *sc)
 {
 	uint32_t v;
 
@@ -3491,7 +3491,7 @@ aq_hw_init(struct aq_softc *sc)
 
 	aq_hw_interrupt_moderation_set(sc);
 
-	aq_set_mac_addr(sc, AQ_HW_MAC_OWN, sc->sc_enaddr.ether_addr_octet);
+	aq1_set_mac_addr(sc, AQ_HW_MAC_OWN, sc->sc_enaddr.ether_addr_octet);
 	aq_set_linkmode(sc, AQ_LINK_NONE, AQ_FC_NONE, AQ_EEE_DISABLE);
 
 	aq_hw_qos_set(sc);
@@ -5162,7 +5162,7 @@ aq_ifflags_cb(struct ethercom *ec)
 
 	iffchange = ifp->if_flags ^ sc->sc_if_flags;
 	if ((iffchange & IFF_PROMISC) != 0)
-		error = aq_set_filter(sc);
+		error = aq1_set_filter(sc);
 
 	ecchange = ec->ec_capenable ^ sc->sc_ec_capenable;
 	if (ecchange & ETHERCAP_VLAN_HWTAGGING) {
@@ -5213,7 +5213,7 @@ aq_init_locked(struct ifnet *ifp)
 	aq_stop_locked(ifp, false);
 
 	aq_set_vlan_filters(sc);
-	aq_set_capability(sc);
+	aq1_set_capability(sc);
 
 	for (i = 0; i < sc->sc_nqueues; i++) {
 		aq_txring_reset(sc, &sc->sc_queue[i].txring, true);
@@ -5238,7 +5238,7 @@ aq_init_locked(struct ifnet *ifp)
 	dump_rxrings(sc);
 #endif
 
-	aq_init_rss(sc);
+	aq1_init_rss(sc);
 	aq_hw_l3_filter_set(sc);
 
 	/* ring reset? */
@@ -5576,7 +5576,7 @@ aq_ioctl(struct ifnet *ifp, unsigned long cmd, void *data)
 
 	switch (cmd) {
 	case SIOCSIFCAP:
-		error = aq_set_capability(sc);
+		error = aq1_set_capability(sc);
 		break;
 	case SIOCADDMULTI:
 	case SIOCDELMULTI:
@@ -5586,7 +5586,7 @@ aq_ioctl(struct ifnet *ifp, unsigned long cmd, void *data)
 			* Multicast list has changed; set the hardware filter
 			* accordingly.
 			*/
-			error = aq_set_filter(sc);
+			error = aq1_set_filter(sc);
 #ifdef XXX_DUMP_MACTABLE
 		aq_dump_mactable(sc);
 #endif
