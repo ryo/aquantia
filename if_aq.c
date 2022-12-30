@@ -1,56 +1,4 @@
-//COMMENT:	
-//COMMENT:	
-//COMMENT:	 MEMO?
-//COMMENT:		VLANIDで16ヶのringに振り分け可能?
-//COMMENT:		ETHERTYPEで16ヶのringに振り分け可能?
-//COMMENT:		L3 filterはで8ヶのringに振り分け可能?
-//COMMENT:			（Linux版のAQ_RX_FIRST_LOC_FVLANIDあたりの定義より）
-//COMMENT:		→ RX_FLR_RSS_CONTROL1_REG の 0x33333333 は 0b11が8ヶ=8ring分?
-//COMMENT:	
-//COMMENT:		L3-L4フィルタはその名の通り、discardするかhostのどのringで受けるかを決めるテーブルであり、rssとは関係ない
-//COMMENT:	
-//COMMENT:	
-//COMMENT:	 TODO
-//COMMENT:		hardware offloading (LRO,TSO)
-//COMMENT:		IP header offset 4n+2問題
-//COMMENT:		tuning
-//COMMENT:	
-//COMMENT:	
-//COMMENT:	 DONE
-//COMMENT:		hardware offloading (RX-csum)
-//COMMENT:		fw1x (revision A0)
-//COMMENT:		vlan hw filter
-//COMMENT:		ifp counters
-//COMMENT:		hardware offloading (TX-csum)
-//COMMENT:		lock
-//COMMENT:		interrupt moderation
-//COMMENT:		vlan
-//COMMENT:		rss
-//COMMENT:		msix
-//COMMENT:		evcnt
-//COMMENT:	
-//COMMENT:	
-
-//#define XXX_FORCE_32BIT_PA
-//#define XXX_FORCE_UDP_TO_RING0
-//#define XXX_NO_MSIX
-//#define XXX_DEBUG_PMAP_EXTRACT
-//#define XXX_FORCE_POLL_LINKSTAT
-//#define XXX_DUMP_STAT
-//#define XXX_INTR_DEBUG
-//#define XXX_RXINTR_DEBUG
-//#define XXX_RXDESC_DEBUG
-//#define XXX_RXRSS_DEBUG
-//#define XXX_DUMP_RX_MBUF
-//#define XXX_TXDESC_DEBUG
-//#define XXX_TXDESC_MORE_DEBUG
-//#define XXX_TXINTR_DEBUG
-//#define XXX_DUMP_MACTABLE
-//#define XXX_DUMP_RING
-//#define XXX_DUMP_RSSKEY
-//#define XXX_ONLY_8_DESCRIPTOR_TEST
-
-/*	$NetBSD: if_aq.c,v 1.31 2021/11/13 21:38:48 ryo Exp $	*/
+/*	$NetBSD: if_aq.c,v 1.39 2022/11/02 20:38:22 andvar Exp $	*/
 
 /**
  * aQuantia Corporation Network Driver
@@ -114,7 +62,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.31 2021/11/13 21:38:48 ryo Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.39 2022/11/02 20:38:22 andvar Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_if_aq.h"
@@ -130,11 +78,6 @@ __KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.31 2021/11/13 21:38:48 ryo Exp $");
 #include <sys/module.h>
 #include <sys/pcq.h>
 
-#ifdef XXX_DEBUG_PMAP_EXTRACT
-#include <uvm/uvm_extern.h>
-#include <uvm/uvm.h>
-#endif
-
 #include <net/bpf.h>
 #include <net/if.h>
 #include <net/if_dl.h>
@@ -149,7 +92,7 @@ __KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.31 2021/11/13 21:38:48 ryo Exp $");
 
 /* driver configuration */
 #define CONFIG_INTR_MODERATION_ENABLE	true	/* delayed interrupt */
-#undef CONFIG_LRO_SUPPORT			/* no LRO not suppoted */
+#undef CONFIG_LRO_SUPPORT			/* no LRO not supported */
 #undef CONFIG_NO_TXRX_INDEPENDENT		/* share TX/RX interrupts */
 
 #define AQ_NINTR_MAX			(AQ_RSSQUEUE_MAX + AQ_RSSQUEUE_MAX + 1)
@@ -160,14 +103,6 @@ __KERNEL_RCSID(0, "$NetBSD: if_aq.c,v 1.31 2021/11/13 21:38:48 ryo Exp $");
 #define AQ_RXD_NUM			2048	/* per ring. 8*n && 32~8184 */
 /* minimum required to send a packet (vlan needs additional TX descriptor) */
 #define AQ_TXD_MIN			(1 + 1)
-
-#ifdef XXX_ONLY_8_DESCRIPTOR_TEST
-#undef AQ_TXD_NUM
-#undef  AQ_RXD_NUM
-/* stress debug */
-#define AQ_TXD_NUM			8	/* per ring. 8*n && <= 8184 */
-#define AQ_RXD_NUM			8	/* per ring. 8*n && <= 8184 */
-#endif
 
 
 /* hardware specification */
@@ -919,6 +854,9 @@ struct aq_txring {
 	int txr_index;
 	kmutex_t txr_mutex;
 	bool txr_active;
+	bool txr_stopping;
+	bool txr_sending;
+	time_t txr_lastsent;
 
 	pcq_t *txr_pcq;
 	void *txr_softint;
@@ -943,6 +881,7 @@ struct aq_rxring {
 	kmutex_t rxr_mutex;
 	bool rxr_active;
 	bool rxr_discarding;
+	bool rxr_stopping;
 	struct mbuf *rxr_receiving_m;		/* receiving jumboframe */
 	struct mbuf *rxr_receiving_m_last;	/* last mbuf of jumboframe */
 
@@ -999,10 +938,12 @@ struct aq_firmware_ops {
 
 #define AQ_LOCK(sc)		mutex_enter(&(sc)->sc_mutex);
 #define AQ_UNLOCK(sc)		mutex_exit(&(sc)->sc_mutex);
+#define AQ_LOCKED(sc)		KASSERT(mutex_owned(&(sc)->sc_mutex));
 
 /* lock for FW2X_MPI_{CONTROL,STATE]_REG read-modify-write */
 #define AQ_MPI_LOCK(sc)		mutex_enter(&(sc)->sc_mpi_mutex);
 #define AQ_MPI_UNLOCK(sc)	mutex_exit(&(sc)->sc_mpi_mutex);
+#define AQ_MPI_LOCKED(sc)	KASSERT(mutex_owned(&(sc)->sc_mpi_mutex));
 
 
 struct aq_softc {
@@ -1083,6 +1024,15 @@ struct aq_softc {
 	int sc_ec_capenable;		/* last ec_capenable */
 	unsigned short sc_if_flags;	/* last if_flags */
 
+	bool sc_tx_sending;
+	bool sc_stopping;
+
+	struct workqueue *sc_reset_wq;
+	struct work sc_reset_work;
+	volatile unsigned sc_reset_pending;
+
+	bool sc_trigger_reset;
+
 #ifdef AQ_EVENT_COUNTERS
 	aq_hw_stats_s_t sc_statistics[2];
 	int sc_statistics_idx;
@@ -1124,13 +1074,14 @@ static void aq_ifmedia_status(struct ifnet * const, struct ifmediareq *);
 static int aq_vlan_cb(struct ethercom *ec, uint16_t vid, bool set);
 static int aq_ifflags_cb(struct ethercom *);
 static int aq_init(struct ifnet *);
+static int aq_init_locked(struct ifnet *);
 static void aq_send_common_locked(struct ifnet *, struct aq_softc *,
     struct aq_txring *, bool);
 static int aq_transmit(struct ifnet *, struct mbuf *);
 static void aq_deferred_transmit(void *);
 static void aq_start(struct ifnet *);
 static void aq_stop(struct ifnet *, int);
-static void aq_watchdog(struct ifnet *);
+static void aq_stop_locked(struct ifnet *, bool);
 static int aq_ioctl(struct ifnet *, unsigned long, void *);
 
 static int aq_txrx_rings_alloc(struct aq_softc *);
@@ -1140,6 +1091,10 @@ static void aq_tx_pcq_free(struct aq_softc *, struct aq_txring *);
 
 static void aq_initmedia(struct aq_softc *);
 static void aq_enable_intr(struct aq_softc *, bool, bool);
+
+static void aq_handle_reset_work(struct work *, void *);
+static void aq_unset_stopping_flags(struct aq_softc *);
+static void aq_set_stopping_flags(struct aq_softc *);
 
 #if NSYSMON_ENVSYS > 0
 static void aq_temp_refresh(struct sysmon_envsys *, envsys_data_t *);
@@ -1183,6 +1138,12 @@ static int fw2x_get_stats(struct aq_softc *, aq_hw_stats_s_t *);
 #if NSYSMON_ENVSYS > 0
 static int fw2x_get_temperature(struct aq_softc *, uint32_t *);
 #endif
+
+#ifndef AQ_WATCHDOG_TIMEOUT
+#define AQ_WATCHDOG_TIMEOUT 5
+#endif
+static int aq_watchdog_timeout = AQ_WATCHDOG_TIMEOUT;
+
 
 static const struct aq_firmware_ops aq_fw1x_ops = {
 	.reset = fw1x_reset,
@@ -1296,7 +1257,7 @@ aq_lookup(const struct pci_attach_args *pa)
 static int
 aq_match(device_t parent, cfdata_t cf, void *aux)
 {
-	struct pci_attach_args *pa = aux;
+	struct pci_attach_args * const pa = aux;
 
 	if (aq_lookup(pa) != NULL)
 		return 1;
@@ -1307,9 +1268,9 @@ aq_match(device_t parent, cfdata_t cf, void *aux)
 static void
 aq_attach(device_t parent, device_t self, void *aux)
 {
-	struct aq_softc *sc = device_private(self);
-	struct pci_attach_args *pa = aux;
-	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	struct aq_softc * const sc = device_private(self);
+	struct pci_attach_args * const pa = aux;
+	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
 	pci_chipset_tag_t pc;
 	pcitag_t tag;
 	pcireg_t command, memtype, bar;
@@ -1323,10 +1284,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 	sc->sc_pc = pc = pa->pa_pc;
 	sc->sc_pcitag = tag = pa->pa_tag;
 	sc->sc_dmat = pci_dma64_available(pa) ? pa->pa_dmat64 : pa->pa_dmat;
-#ifdef XXX_FORCE_32BIT_PA
-	sc->sc_dmat = pa->pa_dmat;
-#endif
-
 
 	command = pci_conf_read(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG);
 	command |= PCI_COMMAND_MASTER_ENABLE;
@@ -1418,10 +1375,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 	    sc->sc_use_txrx_independent_intr ? "*2" : "",
 	    sc->sc_poll_linkstat ? "" : ", and link status");
 
-#ifdef XXX_NO_MSIX
-	sc->sc_msix = false;
-#endif
-
 	if (sc->sc_msix)
 		error = aq_setup_msix(sc, pa, sc->sc_nqueues,
 		    sc->sc_use_txrx_independent_intr, !sc->sc_poll_linkstat);
@@ -1443,12 +1396,20 @@ aq_attach(device_t parent, device_t self, void *aux)
 	if (error != 0)
 		goto attach_failure;
 
-	callout_init(&sc->sc_tick_ch, 0);
+	callout_init(&sc->sc_tick_ch, CALLOUT_MPSAFE);
 	callout_setfunc(&sc->sc_tick_ch, aq_tick, sc);
 
-#ifdef XXX_FORCE_POLL_LINKSTAT
-	sc->sc_poll_linkstat = true;
-#endif
+	char wqname[MAXCOMLEN];
+	snprintf(wqname, sizeof(wqname), "%sReset", device_xname(sc->sc_dev));
+	error = workqueue_create(&sc->sc_reset_wq, wqname,
+	    aq_handle_reset_work, sc, PRI_SOFTNET, IPL_SOFTCLOCK,
+	    WQ_MPSAFE);
+	if (error) {
+		aprint_error_dev(sc->sc_dev,
+		    "unable to create reset workqueue\n");
+		goto attach_failure;
+	}
+
 	sc->sc_intr_moderation_enable = CONFIG_INTR_MODERATION_ENABLE;
 
 	if (sc->sc_msix && (sc->sc_nqueues > 1))
@@ -1499,7 +1460,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 		ifp->if_transmit = aq_transmit;
 	ifp->if_start = aq_start;
 	ifp->if_stop = aq_stop;
-	ifp->if_watchdog = aq_watchdog;
+	ifp->if_watchdog = NULL;
 	IFQ_SET_READY(&ifp->if_snd);
 
 	/* initialize capabilities */
@@ -1546,7 +1507,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 	ether_set_ifflags_cb(&sc->sc_ethercom, aq_ifflags_cb);
 	if_register(ifp);
 
-	aq_enable_intr(sc, true, false);	/* only intr about link */
+	/* only intr about link */
+	aq_enable_intr(sc, /*link*/true, /*txrx*/false);
 
 	/* update media */
 	aq_ifmedia_change(ifp);
@@ -1621,15 +1583,15 @@ aq_attach(device_t parent, device_t self, void *aux)
 static int
 aq_detach(device_t self, int flags __unused)
 {
-	struct aq_softc *sc = device_private(self);
-	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	int i, s;
+	struct aq_softc * const sc = device_private(self);
+	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
+	int i;
 
 	if (sc->sc_iosize != 0) {
 		if (ifp->if_softc != NULL) {
-			s = splnet();
-			aq_stop(ifp, 0);
-			splx(s);
+			IFNET_LOCK(ifp);
+			aq_stop(ifp, 1);
+			IFNET_UNLOCK(ifp);
 		}
 
 		for (i = 0; i < AQ_NINTR_MAX; i++) {
@@ -1656,8 +1618,6 @@ aq_detach(device_t self, int flags __unused)
 		bus_space_unmap(sc->sc_iot, sc->sc_ioh, sc->sc_iosize);
 		sc->sc_iosize = 0;
 	}
-
-	callout_stop(&sc->sc_tick_ch);
 
 #if NSYSMON_ENVSYS > 0
 	if (sc->sc_sme != NULL) {
@@ -2699,7 +2659,7 @@ aq_set_mac_addr(struct aq_softc *sc, int index, uint8_t *enaddr)
 static int
 aq_set_capability(struct aq_softc *sc)
 {
-	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
 	int ip4csum_tx =
 	    ((ifp->if_capenable & IFCAP_CSUM_IPv4_Tx) == 0) ? 0 : 1;
 	int ip4csum_rx =
@@ -2765,8 +2725,8 @@ aq_set_capability(struct aq_softc *sc)
 static int
 aq_set_filter(struct aq_softc *sc)
 {
-	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	struct ethercom *ec = &sc->sc_ethercom;
+	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
+	struct ethercom * const ec = &sc->sc_ethercom;
 	struct ether_multi *enm;
 	struct ether_multistep step;
 	int idx, error = 0;
@@ -2828,7 +2788,8 @@ aq_set_filter(struct aq_softc *sc)
 static int
 aq_ifmedia_change(struct ifnet * const ifp)
 {
-	struct aq_softc *sc = ifp->if_softc;
+	struct aq_softc * const sc = ifp->if_softc;
+
 	aq_link_speed_t rate = AQ_LINK_NONE;
 	aq_link_fc_t fc = AQ_FC_NONE;
 	aq_link_eee_t eee = AQ_EEE_DISABLE;
@@ -2878,7 +2839,7 @@ aq_ifmedia_change(struct ifnet * const ifp)
 static void
 aq_ifmedia_status(struct ifnet * const ifp, struct ifmediareq *ifmr)
 {
-	struct aq_softc *sc = ifp->if_softc;
+	struct aq_softc * const sc = ifp->if_softc;
 
 	/* update ifm_active */
 	ifmr->ifm_active = IFM_ETHER;
@@ -3237,32 +3198,6 @@ aq_init_rss(struct aq_softc *sc)
 		rss_table[i] = i % sc->sc_nqueues;
 	}
 
-#ifdef XXX_DUMP_RSSKEY
-	unsigned char *k = (unsigned char *)rss_key;
-	for (i = 0; i < sizeof(rss_key); i++) {
-		if ((i & 7) == 0) {
-			if (i == 0)
-				printf("rss_key:");
-			else
-				printf("        ");
-		}
-		printf(" 0x%02x", k[i] & 0xff);
-		if ((i & 7) == 7)
-			printf("\n");
-	}
-	for (i = 0; i < AQ_RSS_INDIRECTION_TABLE_MAX; i++) {
-		if ((i & 15) == 0) {
-			if (i == 0)
-				printf("rss_table:");
-			else
-				printf("          ");
-		}
-		printf(" %d", rss_table[i]);
-		if ((i & 15) == 15)
-			printf("\n");
-	}
-#endif
-
 	/*
 	 * set rss key
 	 */
@@ -3323,10 +3258,6 @@ aq_init_rss(struct aq_softc *sc)
 		AQ_WRITE_REG_BIT(sc, RPF_RSS_REDIR_ADDR_REG,
 		    RPF_RSS_REDIR_WR_EN, 1);
 
-#ifdef XXX_DUMP_RSSKEY
-		printf("packed RSSREDIR[%d] = 0x%04x\n", i, bit3x64._b[i]);
-#endif
-
 		WAIT_FOR(AQ_READ_REG_BIT(sc, RPF_RSS_REDIR_ADDR_REG,
 		    RPF_RSS_REDIR_WR_EN) == 0, 1000, 10, &error);
 		if (error != 0)
@@ -3347,35 +3278,13 @@ aq_hw_l3_filter_set(struct aq_softc *sc)
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(i),
 		    RPF_L3_FILTER_L4_EN, 0);
 	}
-#ifdef XXX_FORCE_UDP_TO_RING0
-	if (!enable) {
-		/*
-		 * HW bug workaround:
-		 * Disable RSS for UDP using rx flow filter 0.
-		 * HW does not track RSS stream for fragmenged UDP,
-		 * 0x5040 control reg does not work.
-		 */
-		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0),
-		    RPF_L3_FILTER_L4_EN, 1);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0),
-		    RPF_L3_FILTER_L4_PROTO_EN, 1);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0),
-		    RPF_L3_FILTER_L4_PROTO, RPF_L3_FILTER_L4_PROTO_UDP);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0),
-		    RPF_L3_FILTER_L4_RXQUEUE_EN, 1);
-		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0),
-		    RPF_L3_FILTER_L4_RXQUEUE, 0);	/* to rxring[0] */
-		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(0),
-		    RPF_L3_FILTER_L4_ACTION, RPF_ACTION_HOST);
-	}
-#endif
 }
 
 static void
 aq_set_vlan_filters(struct aq_softc *sc)
 {
-	struct ethercom *ec = &sc->sc_ethercom;
-	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	struct ethercom * const ec = &sc->sc_ethercom;
+	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
 	struct vlanid_list *vlanidp;
 	int i;
 
@@ -3480,7 +3389,7 @@ aq_hw_init(struct aq_softc *sc)
 static int
 aq_update_link_status(struct aq_softc *sc)
 {
-	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
 	aq_link_speed_t rate = AQ_LINK_NONE;
 	aq_link_fc_t fc = AQ_FC_NONE;
 	aq_link_eee_t eee = AQ_EEE_DISABLE;
@@ -3674,27 +3583,6 @@ aq_txring_alloc(struct aq_softc *sc, struct aq_txring *txring)
 	if (error != 0)
 		return error;
 
-#ifdef XXX_DEBUG_PMAP_EXTRACT
-	{
-		bool ok;
-		char *descp = (char *)txring->txr_txdesc;
-		paddr_t pa;
-		vaddr_t va;
-
-		printf("TX desc size = %lu\n", txring->txr_txdesc_size);
-		printf("TX desc DM_SEGS[0] = PA=%08lx\n",
-		    txring->txr_txdesc_dmamap->dm_segs[0].ds_addr);
-
-		for (i = 0;
-		    (bus_size_t)(PAGE_SIZE * i) < txring->txr_txdesc_size;
-		    i++) {
-			va = (vaddr_t)descp + PAGE_SIZE * i;
-			ok = pmap_extract(pmap_kernel(), va, &pa);
-			printf("TX desc VA=%lx, PA=%08lx, ok=%d\n", va, pa, ok);
-		}
-	}
-#endif
-
 	memset(txring->txr_txdesc, 0, sizeof(aq_tx_desc_t) * AQ_TXD_NUM);
 
 	/* fill tx ring with dmamap */
@@ -3742,27 +3630,6 @@ aq_rxring_alloc(struct aq_softc *sc, struct aq_rxring *rxring)
 	    &rxring->rxr_rxdesc_dmamap, rxring->rxr_rxdesc_seg);
 	if (error != 0)
 		return error;
-
-#ifdef XXX_DEBUG_PMAP_EXTRACT
-	{
-		bool ok;
-		char *descp = (char *)rxring->rxr_rxdesc;
-		paddr_t pa;
-		vaddr_t va;
-
-		printf("RX desc size = %lu\n", rxring->rxr_rxdesc_size);
-		printf("RX desc DM_SEGS[0] = PA=%08lx\n",
-		    rxring->rxr_rxdesc_dmamap->dm_segs[0].ds_addr);
-
-		for (i = 0;
-		    (bus_size_t)(PAGE_SIZE * i) < rxring->rxr_rxdesc_size;
-		    i++) {
-			va = (vaddr_t)descp + PAGE_SIZE * i;
-			ok = pmap_extract(pmap_kernel(), va, &pa);
-			printf("RX desc VA=%lx, PA=%08lx, ok=%d\n", va, pa, ok);
-		}
-	}
-#endif
 
 	memset(rxring->rxr_rxdesc, 0, sizeof(aq_rx_desc_t) * AQ_RXD_NUM);
 
@@ -3916,74 +3783,6 @@ aq_txrx_rings_alloc(struct aq_softc *sc)
 	return error;
 }
 
-#ifdef XXX_DUMP_RING
-static void
-dump_txrings(struct aq_softc *sc)
-{
-	struct aq_txring *txring;
-	int n, i;
-
-	for (n = 0; n < sc->sc_nqueues; n++) {
-		txring = &sc->sc_queue[n].txring;
-		mutex_enter(&txring->txr_mutex);
-
-		printf("# txring=%p (index=%d)\n", txring, txring->txr_index);
-		printf("txring->txr_txdesc        = %p\n", txring->txr_txdesc);
-		printf("txring->txr_txdesc_dmamap = %p\n",
-		    txring->txr_txdesc_dmamap);
-		printf("txring->txr_txdesc_size   = %lu\n",
-		    txring->txr_txdesc_size);
-
-		for (i = 0; i < AQ_TXD_NUM; i++) {
-			if (txring->txr_txdesc[i].buf_addr == 0)
-				continue;
-
-			printf("txring->txr_mbufs [%d].m        = %p\n",
-			    i, txring->txr_mbufs[i].m);
-			printf("txring->txr_txdesc[%d].buf_addr = %08lx\n",
-			    i, txring->txr_txdesc[i].buf_addr);
-			printf("txring->txr_txdesc[%d].ctl1  = %08x%s%s\n",
-			    i, txring->txr_txdesc[i].ctl1,
-			    (txring->txr_txdesc[i].ctl1 &
-			    AQ_TXDESC_CTL1_EOP) ? " EOP" : "",
-			    (txring->txr_txdesc[i].ctl1 &
-			    AQ_TXDESC_CTL1_CMD_WB) ? " WB" : "");
-			printf("txring->txr_txdesc[%d].ctl2 = %08x\n",
-			    i, txring->txr_txdesc[i].ctl2);
-		}
-
-		mutex_exit(&txring->txr_mutex);
-	}
-}
-
-static void
-dump_rxrings(struct aq_softc *sc)
-{
-	struct aq_rxring *rxring;
-	int n, i;
-
-	for (n = 0; n < sc->sc_nqueues; n++) {
-		rxring = &sc->sc_queue[n].rxring;
-		mutex_enter(&rxring->rxr_mutex);
-
-		printf("# rxring=%p (index=%d)\n", rxring, rxring->rxr_index);
-		printf("rxring->rxr_rxdesc        = %p\n", rxring->rxr_rxdesc);
-		printf("rxring->rxr_rxdesc_dmamap = %p\n",
-		    rxring->rxr_rxdesc_dmamap);
-		printf("rxring->rxr_rxdesc_size   = %lu\n",
-		    rxring->rxr_rxdesc_size);
-		for (i = 0; i < AQ_RXD_NUM; i++) {
-			printf("rxring->rxr_mbufs[%d].m      = %p\n",
-			    i, rxring->rxr_mbufs[i].m);
-			printf("rxring->rxr_mbufs[%d].dmamap = %p\n",
-			    i, rxring->rxr_mbufs[i].dmamap);
-		}
-
-		mutex_exit(&rxring->rxr_mutex);
-	}
-}
-#endif /* XXX_DUMP_RING */
-
 static void
 aq_txrx_rings_free(struct aq_softc *sc)
 {
@@ -4066,10 +3865,67 @@ aq_temp_refresh(struct sysmon_envsys *sme, envsys_data_t *edata)
 }
 #endif
 
+
+
+static bool
+aq_watchdog_check(struct aq_softc * const sc)
+{
+
+	AQ_LOCKED(sc);
+
+	bool ok = true;
+	for (u_int n = 0; n < sc->sc_nqueues; n++) {
+		struct aq_txring *txring = &sc->sc_queue[n].txring;
+
+		mutex_enter(&txring->txr_mutex);
+		if (txring->txr_sending &&
+		    time_uptime - txring->txr_lastsent > aq_watchdog_timeout)
+			ok = false;
+
+		mutex_exit(&txring->txr_mutex);
+
+		if (!ok)
+			return false;
+	}
+
+	if (sc->sc_trigger_reset) {
+		/* debug operation, no need for atomicity or reliability */
+		sc->sc_trigger_reset = 0;
+		return false;
+	}
+
+	return true;
+}
+
+
+
+static bool
+aq_watchdog_tick(struct ifnet *ifp)
+{
+	struct aq_softc * const sc = ifp->if_softc;
+
+	AQ_LOCKED(sc);
+
+	if (!sc->sc_trigger_reset && aq_watchdog_check(sc))
+		return true;
+
+	if (atomic_swap_uint(&sc->sc_reset_pending, 1) == 0) {
+		workqueue_enqueue(sc->sc_reset_wq, &sc->sc_reset_work, NULL);
+	}
+
+	return false;
+}
+
 static void
 aq_tick(void *arg)
 {
-	struct aq_softc *sc = arg;
+	struct aq_softc * const sc = arg;
+
+	AQ_LOCK(sc);
+	if (sc->sc_stopping) {
+		AQ_UNLOCK(sc);
+		return;
+	}
 
 	if (sc->sc_poll_linkstat || sc->sc_detect_linkstat) {
 		sc->sc_detect_linkstat = false;
@@ -4081,13 +3937,12 @@ aq_tick(void *arg)
 		aq_update_statistics(sc);
 #endif
 
-	if (sc->sc_poll_linkstat
-#ifdef AQ_EVENT_COUNTERS
-	    || sc->sc_poll_statistics
-#endif
-	    ) {
+	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
+	const bool ok = aq_watchdog_tick(ifp);
+	if (ok)
 		callout_schedule(&sc->sc_tick_ch, hz);
-	}
+
+	AQ_UNLOCK(sc);
 }
 
 /* interrupt enable/disable */
@@ -4119,15 +3974,14 @@ aq_legacy_intr(void *arg)
 	int nintr = 0;
 
 	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
-#ifdef XXX_INTR_DEBUG
-	printf("%s: INTR_MASK/STATUS = %08x/%08x\n",
-	    __func__, AQ_READ_REG(sc, AQ_INTR_MASK_REG), status);
-#endif
 	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, 0xffffffff);
 
 	if (status & __BIT(sc->sc_linkstat_irq)) {
+		AQ_LOCK(sc);
 		sc->sc_detect_linkstat = true;
-		callout_schedule(&sc->sc_tick_ch, 0);
+		if (!sc->sc_stopping)
+			callout_schedule(&sc->sc_tick_ch, 0);
+		AQ_UNLOCK(sc);
 		nintr++;
 	}
 
@@ -4164,12 +4018,6 @@ aq_txrx_intr(void *arg)
 		return 0;
 	}
 
-#ifdef XXX_INTR_DEBUG
-	printf("%s@cpu%d: ringidx=%d: INTR_MASK/STATUS = %08x/%08x\n",
-	    __func__, cpu_index(curcpu()), txringidx,
-	    AQ_READ_REG(sc, AQ_INTR_MASK_REG), status);
-#endif
-
 	nintr += aq_rx_intr(rxring);
 	nintr += aq_tx_intr(txring);
 
@@ -4179,20 +4027,17 @@ aq_txrx_intr(void *arg)
 static int
 aq_link_intr(void *arg)
 {
-	struct aq_softc *sc = arg;
+	struct aq_softc * const sc = arg;
 	uint32_t status;
 	int nintr = 0;
 
 	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
-#ifdef XXX_INTR_DEBUG
-	printf("%s@cpu%d: INTR_MASK/STATUS = %08x/%08x\n",
-	    __func__, cpu_index(curcpu()),
-	    AQ_READ_REG(sc, AQ_INTR_MASK_REG), status);
-#endif
-
 	if (status & __BIT(sc->sc_linkstat_irq)) {
+		AQ_LOCK(sc);
 		sc->sc_detect_linkstat = true;
-		callout_schedule(&sc->sc_tick_ch, 0);
+		if (!sc->sc_stopping)
+			callout_schedule(&sc->sc_tick_ch, 0);
+		AQ_UNLOCK(sc);
 		AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG,
 		    __BIT(sc->sc_linkstat_irq));
 		nintr++;
@@ -4408,10 +4253,6 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 
 	if (vlan_has_tag(m)) {
 		ctl1 = AQ_TXDESC_CTL1_TYPE_TXC;
-#ifdef XXX_TXDESC_DEBUG
-		printf("TXring[%d].desc[%d] set VLANID %u\n",
-		    txring->txr_index, idx, vlan_get_tag(m));
-#endif
 		ctl1 |= __SHIFTIN(vlan_get_tag(m), AQ_TXDESC_CTL1_VID);
 
 		ctl1_ctx |= AQ_TXDESC_CTL1_CMD_VLAN;
@@ -4451,14 +4292,6 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 			ctl1 |= AQ_TXDESC_CTL1_EOP | AQ_TXDESC_CTL1_CMD_WB;
 		}
 
-#ifdef XXX_TXDESC_DEBUG
-		printf("TXring[%d].desc[%d] seg:%d/%d buf_addr=%012lx,"
-		    " len=%-5lu ctl1=%08x ctl2=%08x%s\n",
-		    txring->txr_index, idx, i, map->dm_nsegs - 1,
-		    map->dm_segs[i].ds_addr, map->dm_segs[i].ds_len,
-		    ctl1, ctl2,
-		    (i == map->dm_nsegs - 1) ? " EOP/WB" : "");
-#endif
 		txring->txr_txdesc[idx].buf_addr =
 		    htole64(map->dm_segs[i].ds_addr);
 		txring->txr_txdesc[idx].ctl1 = htole32(ctl1);
@@ -4480,9 +4313,9 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 static int
 aq_tx_intr(void *arg)
 {
-	struct aq_txring *txring = arg;
-	struct aq_softc *sc = txring->txr_sc;
-	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	struct aq_txring * const txring = arg;
+	struct aq_softc * const sc = txring->txr_sc;
+	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
 	struct mbuf *m;
 	const int ringidx = txring->txr_index;
 	unsigned int idx, hw_head, n = 0;
@@ -4495,59 +4328,14 @@ aq_tx_intr(void *arg)
 	hw_head = AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(ringidx),
 	    TX_DMA_DESC_HEAD_PTR);
 	if (hw_head == txring->txr_considx) {
-#ifdef XXX_TXINTR_DEBUG
-		printf("%s:%d: ringidx=%d, head/cons=%d/%d."
-		    " NO NEED to collect mbufs\n", __func__, __LINE__,
-		    ringidx, hw_head, txring->txr_considx);
-#endif
+		txring->txr_sending = false;
 		goto tx_intr_done;
 	}
-
-#ifdef XXX_TXINTR_DEBUG
-	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u prod/cons=%d/%d\n",
-	    __func__, __LINE__, ringidx,
-	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(ringidx),
-	    TX_DMA_DESC_HEAD_PTR),
-	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(ringidx)),
-	    txring->txr_prodidx, txring->txr_considx);
-#endif
 
 	net_stat_ref_t nsr = IF_STAT_GETREF(ifp);
 
 	for (idx = txring->txr_considx; idx != hw_head;
 	    idx = TXRING_NEXTIDX(idx), n++) {
-
-#ifdef XXX_TXDESC_MORE_DEBUG
-		printf("# %s:%d: txring=%d, TX CLEANUP: HEAD/TAIL=%lu/%u,"
-		    " considx/prodidx=%d/%d, idx=%d\n", __func__, __LINE__,
-		    ringidx,
-		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(ringidx),
-		    TX_DMA_DESC_HEAD_PTR),
-		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(ringidx)),
-		    txring->txr_considx, txring->txr_prodidx, idx);
-#endif
-
-#ifdef XXX_TXDESC_MORE_DEBUG
-		/* DEBUG: show done txdesc */
-		bus_dmamap_sync(sc->sc_dmat, txring->txr_txdesc_dmamap,
-		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
-		    BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE);
-		printf("%s:%d: written txdesc[%3d] buf_addr=%012lx,"
-		    " ctl=%08x ctl2=%08x\n", __func__, __LINE__, idx,
-		    txring->txr_txdesc[idx].buf_addr,
-		    txring->txr_txdesc[idx].ctl1,
-		    txring->txr_txdesc[idx].ctl2);
-#endif
-
-#ifdef XXX_TXDESC_MORE_DEBUG
-		/* DEBUG: clear done txdesc */
-		txring->txr_txdesc[idx].buf_addr = 0;
-		txring->txr_txdesc[idx].ctl1 = AQ_TXDESC_CTL1_DD;
-		txring->txr_txdesc[idx].ctl2 = 0;
-		bus_dmamap_sync(sc->sc_dmat, txring->txr_txdesc_dmamap,
-		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
-		    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
-#endif
 
 		if ((m = txring->txr_mbufs[idx].m) != NULL) {
 			bus_dmamap_unload(sc->sc_dmat,
@@ -4568,12 +4356,9 @@ aq_tx_intr(void *arg)
 
 	IF_STAT_PUTREF(ifp);
 
-	if (ringidx == 0 && txring->txr_nfree >= AQ_TXD_MIN)
-		ifp->if_flags &= ~IFF_OACTIVE;
-
 	/* no more pending TX packet, cancel watchdog */
 	if (txring->txr_nfree >= AQ_TXD_NUM)
-		ifp->if_timer = 0;
+		txring->txr_sending = false;
 
  tx_intr_done:
 	mutex_exit(&txring->txr_mutex);
@@ -4585,9 +4370,9 @@ aq_tx_intr(void *arg)
 static int
 aq_rx_intr(void *arg)
 {
-	struct aq_rxring *rxring = arg;
-	struct aq_softc *sc = rxring->rxr_sc;
-	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	struct aq_rxring * const rxring = arg;
+	struct aq_softc * const sc = rxring->rxr_sc;
+	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
 	const int ringidx = rxring->rxr_index;
 	aq_rx_desc_t *rxd;
 	struct mbuf *m, *m0, *mprev, *new_m;
@@ -4604,28 +4389,8 @@ aq_rx_intr(void *arg)
 
 	if (rxring->rxr_readidx == AQ_READ_REG_BIT(sc,
 	    RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR)) {
-#ifdef XXX_RXINTR_DEBUG
-		printf("%s:%d: stray interrupt?: readidx=%u,"
-		    " RX_DMA_DESC_HEAD/TAIL=%lu/%u\n", __func__, __LINE__,
-		    rxring->rxr_readidx,
-		    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx),
-		    RX_DMA_DESC_HEAD_PTR),
-		    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
-#endif
 		goto rx_intr_done;
 	}
-
-#ifdef XXX_RXINTR_DEBUG
-	printf("# %s:%d\n", __func__, __LINE__);
-#endif
-
-#ifdef XXX_RXINTR_DEBUG
-	printf("%s:%d: begin: readidx=%u, RX_DMA_DESC_HEAD/TAIL=%lu/%u\n",
-	    __func__, __LINE__, rxring->rxr_readidx,
-	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx),
-	    RX_DMA_DESC_HEAD_PTR),
-	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
-#endif
 
 	net_stat_ref_t nsr = IF_STAT_GETREF(ifp);
 
@@ -4654,16 +4419,6 @@ aq_rx_intr(void *arg)
 		rxd_hash = le32toh(rxd->wb.rss_hash);
 		rxd_vlan = le16toh(rxd->wb.vlan);
 
-#ifdef XXX_RXDESC_DEBUG
-		printf("rxd.%d[%d].type=%08x, hash=%08x, status=%04x, pkt_len=%u, ndp=%u, vlan=%u\n", ringidx, idx,
-		    le32toh(rxd->wb.type),
-		    le32toh(rxd->wb.rss_hash),
-		    le16toh(rxd->wb.status),
-		    le16toh(rxd->wb.pkt_len),
-		    le16toh(rxd->wb.next_desc_ptr),
-		    le16toh(rxd->wb.vlan));
-#endif
-
 		/*
 		 * Some segments are being dropped while receiving jumboframe.
 		 * Discard until EOP.
@@ -4674,28 +4429,6 @@ aq_rx_intr(void *arg)
 		if ((rxd_status & RXDESC_STATUS_MACERR) ||
 		    (rxd_type & RXDESC_TYPE_MAC_DMA_ERR)) {
 			if_statinc_ref(nsr, if_ierrors);
-#ifdef XXX_RXDESC_DEBUG
-			device_printf(sc->sc_dev,
-			    "DMA_ERR: desc[%d] type=0x%08x, hash=0x%08x,"
-			    " status=0x%08x, pktlen=%u, nextdesc=%u,"
-			    " vlan=0x%x\n",
-			    idx, rxd_type, rxd_hash, rxd_status, rxd_pktlen,
-			    rxd_nextdescptr, rxd_vlan);
-			device_printf(sc->sc_dev,
-			    "DMA_ERR: type: rsstype=0x%x, rdm=%u,"
-			    " ipv4checked=%u, tcpudpchecked=%u,"
-			    " sph=%u, hdrlen=%u\n",
-			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
-			    (uint32_t)__SHIFTOUT(rxd_type,
-			    RXDESC_TYPE_MAC_DMA_ERR),
-			    (uint32_t)__SHIFTOUT(rxd_type,
-			    RXDESC_TYPE_IPV4_CSUM_CHECKED),
-			    (uint32_t)__SHIFTOUT(rxd_type,
-			    RXDESC_TYPE_TCPUDP_CSUM_CHECKED),
-			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
-			    (uint32_t)__SHIFTOUT(rxd_type,
-			    RXDESC_TYPE_HDR_LEN));
-#endif
 			if (m0 != NULL) {
 				m_freem(m0);
 				m0 = mprev = NULL;
@@ -4703,171 +4436,6 @@ aq_rx_intr(void *arg)
 			discarding = true;
 			goto rx_next;
 		}
-
-#ifdef XXX_RXDESC_DEBUG
-		{
-			const char * const rsstype_tbl[15] = {
-				[RXDESC_TYPE_RSSTYPE_NONE] = "none",
-				[RXDESC_TYPE_RSSTYPE_IPV4] = "ipv4",
-				[RXDESC_TYPE_RSSTYPE_IPV6] = "ipv6",
-				[RXDESC_TYPE_RSSTYPE_IPV4_TCP] = "ipv4-tcp",
-				[RXDESC_TYPE_RSSTYPE_IPV6_TCP] = "ipv6-tcp",
-				[RXDESC_TYPE_RSSTYPE_IPV4_UDP] = "ipv4-udp",
-				[RXDESC_TYPE_RSSTYPE_IPV6_UDP] = "ipv6-udp"
-			};
-			const char * const pkttype_eth_table[4] = {
-				"IPV4",
-				"IPV6",
-				"OTHERS",
-				"ARP"
-			};
-			const char * const pkttype_proto_table[8] = {
-				"TCP",
-				"UDP",
-				"SCTP",
-				"ICMP",
-				"OTHERS",
-				"PKTTYPE_PROTO5",
-				"PKTTYPE_PROTO6",
-				"PKTTYPE_PROTO7"
-			};
-
-			const char *rsstype = rsstype_tbl[__SHIFTOUT(rxd_type,
-			    RXDESC_TYPE_RSSTYPE) & 15];
-			if (rsstype == NULL)
-				rsstype = "???";
-
-			unsigned int pkttype_proto =
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_PROTO);
-			unsigned int pkttype_eth =
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_ETHER);
-
-			const char *ip4csumstatus = "?";
-			if (pkttype_eth == RXDESC_TYPE_PKTTYPE_ETHER_IPV4) {
-				if (__SHIFTOUT(rxd_type,
-				    RXDESC_TYPE_IPV4_CSUM_CHECKED)) {
-					ip4csumstatus = "ipv4 checked";
-					if (__SHIFTOUT(rxd_status,
-					    RXDESC_STATUS_IPV4_CSUM_NG) == 0) {
-						ip4csumstatus = "ipv4 csum OK";
-					} else {
-						ip4csumstatus = "ipv4 csum NG";
-					}
-				} else {
-					ip4csumstatus = "ipv4 not checked";
-				}
-			}
-			const char *tcpudp_csumstatus = "?";
-			if (__SHIFTOUT(rxd_type,
-			    RXDESC_TYPE_TCPUDP_CSUM_CHECKED)) {
-				tcpudp_csumstatus = "TCP/UDP checked";
-				if (__SHIFTOUT(rxd_status,
-				    RXDESC_STATUS_TCPUDP_CSUM_ERROR)) {
-					tcpudp_csumstatus = "TCP/UDP csum ERR";
-				} else {
-					if (__SHIFTOUT(rxd_status,
-					    RXDESC_STATUS_TCPUDP_CSUM_OK)) {
-						tcpudp_csumstatus =
-						    "TCP/UDP csum OK";
-					} else {
-						tcpudp_csumstatus =
-						    "TCP/UDP csum NG";
-					}
-				}
-			} else {
-				tcpudp_csumstatus = "TCP/UDP not checked";
-			}
-
-			printf("RXring[%d].desc[%d]\n	 pktlen=%u,"
-			    " type=0x%x(sph=%ld, hdrlen=%ld), status=0x%x"
-			    "(DD=%lu, EOP=%lu, ERR=%lu), nextdsc=%u, vlan=%u\n",
-			    ringidx, idx, rxd_pktlen, rxd_type,
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN),
-			    rxd_status,
-			    __SHIFTOUT(rxd_status, RXDESC_STATUS_DD),
-			    __SHIFTOUT(rxd_status, RXDESC_STATUS_EOP),
-			    __SHIFTOUT(rxd_status, RXDESC_STATUS_MACERR),
-			    rxd_nextdescptr, rxd_vlan);
-
-			printf("    rsstype=0x%lx(%s), RssHash=0x%08x,"
-			    " pkttype_vlan=%lu/%lu, pkttype_eth=%u(%s),"
-			    " pkttype_proto=%u(%s)\n",
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE), rsstype,
-			    rxd_hash,
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
-			    __SHIFTOUT(rxd_type,
-			    RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE),
-			    pkttype_eth, pkttype_eth_table[pkttype_eth],
-			    pkttype_proto, pkttype_proto_table[pkttype_proto]);
-
-			printf("    IPv4chked=%ld,%s, TCPUDPchked=%ld,%s,%s\n",
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED),
-			    __SHIFTOUT(rxd_status, RXDESC_STATUS_IPV4_CSUM_NG) ?
-			    "NG" : "OK",
-			    __SHIFTOUT(rxd_type,
-			    RXDESC_TYPE_TCPUDP_CSUM_CHECKED),
-			    __SHIFTOUT(rxd_status,
-			    RXDESC_STATUS_TCPUDP_CSUM_ERROR) ? "ERR" : "NoERR",
-			    __SHIFTOUT(rxd_status,
-			    RXDESC_STATUS_TCPUDP_CSUM_OK) ? "OK" : "NG");
-			printf("    ip4csumstatus=%s, tcpudp_csumstatus=%s\n",
-			    ip4csumstatus, tcpudp_csumstatus);
-		}
-#endif /* XXX_RXDESC_DEBUG */
-
-#ifdef XXX_RXRSS_DEBUG
-		{
-			const char * const rsstype_tbl[15] = {
-				[RXDESC_TYPE_RSSTYPE_NONE] = "none",
-				[RXDESC_TYPE_RSSTYPE_IPV4] = "ipv4",
-				[RXDESC_TYPE_RSSTYPE_IPV6] = "ipv6",
-				[RXDESC_TYPE_RSSTYPE_IPV4_TCP] = "ipv4-tcp",
-				[RXDESC_TYPE_RSSTYPE_IPV6_TCP] = "ipv6-tcp",
-				[RXDESC_TYPE_RSSTYPE_IPV4_UDP] = "ipv4-udp",
-				[RXDESC_TYPE_RSSTYPE_IPV6_UDP] = "ipv6-udp"
-			};
-			const char * const pkttype_eth_table[4] = {
-				"IPV4",
-				"IPV6",
-				"OTHERS",
-				"ARP"
-			};
-			const char * const pkttype_proto_table[8] = {
-				"TCP",
-				"UDP",
-				"SCTP",
-				"ICMP",
-				"OTHERS",
-				"PKTTYPE_PROTO5",
-				"PKTTYPE_PROTO6",
-				"PKTTYPE_PROTO7"
-			};
-
-			const char *rsstype = rsstype_tbl[__SHIFTOUT(rxd_type,
-			    RXDESC_TYPE_RSSTYPE) & 15];
-			if (rsstype == NULL)
-				rsstype = "???";
-
-			unsigned int pkttype_proto =
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_PROTO);
-			unsigned int pkttype_eth =
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_ETHER);
-
-			printf("RXring[%d].desc[%d] rsstype=0x%x(%s),"
-			    " RssHash=0x%08x, pkttype_vlan=%u/%u,"
-			    " pkttype_eth=%u(%s), pkttype_proto=%u(%s)\n",
-			    ringidx, idx,
-			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
-			    rsstype, rxd_hash,
-			    (uint32_t)__SHIFTOUT(rxd_type,
-			    RXDESC_TYPE_PKTTYPE_VLAN),
-			    (uint32_t)__SHIFTOUT(rxd_type,
-			    RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE),
-			    pkttype_eth, pkttype_eth_table[pkttype_eth],
-			    pkttype_proto, pkttype_proto_table[pkttype_proto]);
-		}
-#endif
 
 		bus_dmamap_sync(sc->sc_dmat, rxring->rxr_mbufs[idx].dmamap, 0,
 		    rxring->rxr_mbufs[idx].dmamap->dm_mapsize,
@@ -4903,9 +4471,6 @@ aq_rx_intr(void *arg)
 		if ((rxd_status & RXDESC_STATUS_EOP) == 0) {
 			/* to be continued in the next segment */
 			m->m_len = MCLBYTES;
-#ifdef XXX_DUMP_RX_MBUF
-			hexdump(printf, "mbuf (continue)", m->m_data, m->m_len);
-#endif
 		} else {
 			/* the last segment */
 			int mlen = rxd_pktlen % MCLBYTES;
@@ -4913,9 +4478,6 @@ aq_rx_intr(void *arg)
 				mlen = MCLBYTES;
 			m->m_len = mlen;
 			m0->m_pkthdr.len = rxd_pktlen;
-#ifdef XXX_DUMP_RX_MBUF
-			hexdump(printf, "mbuf (EOP)", m->m_data, m->m_len);
-#endif
 			/* VLAN offloading */
 			if ((sc->sc_ethercom.ec_capenable &
 			    ETHERCAP_VLAN_HWTAGGING) &&
@@ -5016,14 +4578,6 @@ aq_rx_intr(void *arg)
 	rxring->rxr_receiving_m = m0;
 	rxring->rxr_receiving_m_last = mprev;
 
-#ifdef XXX_RXINTR_DEBUG
-	printf("%s:%d: end: readidx=%u, RX_DMA_DESC_HEAD/TAIL=%lu/%u\n",
-	    __func__, __LINE__, rxring->rxr_readidx,
-	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx),
-	    RX_DMA_DESC_HEAD_PTR),
-	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
-#endif
-
 	IF_STAT_PUTREF(ifp);
 
  rx_intr_done:
@@ -5037,7 +4591,7 @@ static int
 aq_vlan_cb(struct ethercom *ec, uint16_t vid, bool set)
 {
 	struct ifnet *ifp = &ec->ec_if;
-	struct aq_softc *sc = ifp->if_softc;
+	struct aq_softc * const sc = ifp->if_softc;
 
 	aq_set_vlan_filters(sc);
 	return 0;
@@ -5046,8 +4600,8 @@ aq_vlan_cb(struct ethercom *ec, uint16_t vid, bool set)
 static int
 aq_ifflags_cb(struct ethercom *ec)
 {
-	struct ifnet *ifp = &ec->ec_if;
-	struct aq_softc *sc = ifp->if_softc;
+	struct ifnet * const ifp = &ec->ec_if;
+	struct aq_softc * const sc = ifp->if_softc;
 	int i, ecchange, error = 0;
 	unsigned short iffchange;
 
@@ -5079,15 +4633,31 @@ aq_ifflags_cb(struct ethercom *ec)
 	return error;
 }
 
+
 static int
 aq_init(struct ifnet *ifp)
 {
-	struct aq_softc *sc = ifp->if_softc;
-	int i, error = 0;
-
-	aq_stop(ifp, false);
+	struct aq_softc * const sc = ifp->if_softc;
 
 	AQ_LOCK(sc);
+
+	int ret = aq_init_locked(ifp);
+
+	AQ_UNLOCK(sc);
+
+	return ret;
+}
+
+static int
+aq_init_locked(struct ifnet *ifp)
+{
+	struct aq_softc * const sc = ifp->if_softc;
+	int i, error = 0;
+
+	KASSERT(IFNET_LOCKED(ifp));
+	AQ_LOCKED(sc);
+
+	aq_stop_locked(ifp, false);
 
 	aq_set_vlan_filters(sc);
 	aq_set_capability(sc);
@@ -5110,36 +4680,24 @@ aq_init(struct ifnet *ifp)
 			goto aq_init_failure;
 		}
 	}
-#ifdef XXX_DUMP_RING
-	dump_txrings(sc);
-	dump_rxrings(sc);
-#endif
-
 	aq_init_rss(sc);
 	aq_hw_l3_filter_set(sc);
 
-	/* need to start callout? */
-	if (sc->sc_poll_linkstat
-#ifdef AQ_EVENT_COUNTERS
-	    || sc->sc_poll_statistics
-#endif
-	    ) {
-		callout_schedule(&sc->sc_tick_ch, hz);
-	}
+	/* ring reset? */
+	aq_unset_stopping_flags(sc);
+
+	callout_schedule(&sc->sc_tick_ch, hz);
 
 	/* ready */
 	ifp->if_flags |= IFF_RUNNING;
-	ifp->if_flags &= ~IFF_OACTIVE;
 
 	/* start TX and RX */
-	aq_enable_intr(sc, true, true);
+	aq_enable_intr(sc, /*link*/true, /*txrx*/true);
 	AQ_WRITE_REG_BIT(sc, TPB_TX_BUF_REG, TPB_TX_BUF_EN, 1);
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_REG, RPB_RPF_RX_BUF_EN, 1);
 
  aq_init_failure:
 	sc->sc_if_flags = ifp->if_flags;
-
-	AQ_UNLOCK(sc);
 
 	return error;
 }
@@ -5151,19 +4709,8 @@ aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc,
 	struct mbuf *m;
 	int npkt, error;
 
-	if ((ifp->if_flags & IFF_RUNNING) == 0)
+	if (txring->txr_nfree < AQ_TXD_MIN)
 		return;
-
-#ifdef XXX_TXDESC_DEBUG
-	printf("%s:%d: "
-	    "ringidx=%d, HEAD/TAIL=%lu/%u, INTR_MASK/STATUS=%08x/%08x\n",
-	    __func__, __LINE__, txring->txr_index,
-	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index),
-	    TX_DMA_DESC_HEAD_PTR),
-	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index)),
-	    AQ_READ_REG(sc, AQ_INTR_MASK_REG),
-	    AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
-#endif
 
 	for (npkt = 0; ; npkt++) {
 		if (is_transmit)
@@ -5172,9 +4719,6 @@ aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc,
 			IFQ_POLL(&ifp->if_snd, m);
 
 		if (m == NULL)
-			break;
-
-		if (txring->txr_nfree < AQ_TXD_MIN)
 			break;
 
 		if (is_transmit)
@@ -5187,8 +4731,6 @@ aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc,
 			/* too many mbuf chains? or not enough descriptors? */
 			m_freem(m);
 			if_statinc(ifp, if_oerrors);
-			if (txring->txr_index == 0 && error == ENOBUFS)
-				ifp->if_flags |= IFF_OACTIVE;
 			break;
 		}
 
@@ -5200,24 +4742,22 @@ aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc,
 		bpf_mtap(ifp, m, BPF_D_OUT);
 	}
 
-	if (txring->txr_index == 0 && txring->txr_nfree < AQ_TXD_MIN)
-		ifp->if_flags |= IFF_OACTIVE;
-
-	if (npkt)
-		ifp->if_timer = 5;
+	if (npkt) {
+		/* Set a watchdog timer in case the chip flakes out. */
+		txring->txr_lastsent = time_uptime;
+		txring->txr_sending = true;
+	}
 }
 
 static void
 aq_start(struct ifnet *ifp)
 {
-	struct aq_softc *sc;
-	struct aq_txring *txring;
-
-	sc = ifp->if_softc;
-	txring = &sc->sc_queue[0].txring; /* aq_start() always use TX ring[0] */
+	struct aq_softc * const sc = ifp->if_softc;
+	/* aq_start() always use TX ring[0] */
+	struct aq_txring * const txring = &sc->sc_queue[0].txring;
 
 	mutex_enter(&txring->txr_mutex);
-	if (txring->txr_active && !ISSET(ifp->if_flags, IFF_OACTIVE))
+	if (txring->txr_active && !txring->txr_stopping)
 		aq_send_common_locked(ifp, sc, txring, false);
 	mutex_exit(&txring->txr_mutex);
 }
@@ -5231,12 +4771,9 @@ aq_select_txqueue(struct aq_softc *sc, struct mbuf *m)
 static int
 aq_transmit(struct ifnet *ifp, struct mbuf *m)
 {
-	struct aq_softc *sc = ifp->if_softc;
-	struct aq_txring *txring;
-	int ringidx;
-
-	ringidx = aq_select_txqueue(sc, m);
-	txring = &sc->sc_queue[ringidx].txring;
+	struct aq_softc * const sc = ifp->if_softc;
+	const int ringidx = aq_select_txqueue(sc, m);
+	struct aq_txring * const txring = &sc->sc_queue[ringidx].txring;
 
 	if (__predict_false(!pcq_put(txring->txr_pcq, m))) {
 		m_freem(m);
@@ -5255,9 +4792,9 @@ aq_transmit(struct ifnet *ifp, struct mbuf *m)
 static void
 aq_deferred_transmit(void *arg)
 {
-	struct aq_txring *txring = arg;
-	struct aq_softc *sc = txring->txr_sc;
-	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
+	struct aq_txring * const txring = arg;
+	struct aq_softc * const sc = txring->txr_sc;
+	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
 
 	mutex_enter(&txring->txr_mutex);
 	if (pcq_peek(txring->txr_pcq) != NULL)
@@ -5265,21 +4802,85 @@ aq_deferred_transmit(void *arg)
 	mutex_exit(&txring->txr_mutex);
 }
 
+
+static void
+aq_unset_stopping_flags(struct aq_softc *sc)
+{
+
+	AQ_LOCKED(sc);
+
+	/* Must unset stopping flags in ascending order. */
+	for (unsigned i = 0; i < sc->sc_nqueues; i++) {
+		struct aq_txring *txr = &sc->sc_queue[i].txring;
+		struct aq_rxring *rxr = &sc->sc_queue[i].rxring;
+
+		mutex_enter(&txr->txr_mutex);
+		txr->txr_stopping = false;
+		mutex_exit(&txr->txr_mutex);
+
+		mutex_enter(&rxr->rxr_mutex);
+		rxr->rxr_stopping = false;
+		mutex_exit(&rxr->rxr_mutex);
+	}
+
+	sc->sc_stopping = false;
+}
+
+static void
+aq_set_stopping_flags(struct aq_softc *sc)
+{
+
+	AQ_LOCKED(sc);
+
+	/* Must unset stopping flags in ascending order. */
+	for (unsigned i = 0; i < sc->sc_nqueues; i++) {
+		struct aq_txring *txr = &sc->sc_queue[i].txring;
+		struct aq_rxring *rxr = &sc->sc_queue[i].rxring;
+
+		mutex_enter(&txr->txr_mutex);
+		txr->txr_stopping = true;
+		mutex_exit(&txr->txr_mutex);
+
+		mutex_enter(&rxr->rxr_mutex);
+		rxr->rxr_stopping = true;
+		mutex_exit(&rxr->rxr_mutex);
+	}
+
+	sc->sc_stopping = true;
+}
+
+
 static void
 aq_stop(struct ifnet *ifp, int disable)
 {
-	struct aq_softc *sc = ifp->if_softc;
-	int i;
+	struct aq_softc * const sc = ifp->if_softc;
+
+	ASSERT_SLEEPABLE();
+	KASSERT(IFNET_LOCKED(ifp));
 
 	AQ_LOCK(sc);
+	aq_stop_locked(ifp, disable ? true : false);
+	AQ_UNLOCK(sc);
+}
 
-	ifp->if_timer = 0;
+
+
+static void
+aq_stop_locked(struct ifnet *ifp, bool disable)
+{
+	struct aq_softc * const sc = ifp->if_softc;
+	int i;
+
+	KASSERT(IFNET_LOCKED(ifp));
+	AQ_LOCKED(sc);
+
+	aq_set_stopping_flags(sc);
 
 	if ((ifp->if_flags & IFF_RUNNING) == 0)
 		goto already_stopped;
 
 	/* disable tx/rx interrupts */
-	aq_enable_intr(sc, true, false);
+	aq_enable_intr(sc, /*link*/true, /*txrx*/false);
 
 	AQ_WRITE_REG_BIT(sc, TPB_TX_BUF_REG, TPB_TX_BUF_EN, 0);
 	for (i = 0; i < sc->sc_nqueues; i++) {
@@ -5296,26 +4897,22 @@ aq_stop(struct ifnet *ifp, int disable)
 	    AQ_READ_REG_BIT(sc,
 	    RX_DMA_DESC_CACHE_INIT_REG, RX_DMA_DESC_CACHE_INIT) ^ 1);
 
-	ifp->if_timer = 0;
-
  already_stopped:
-	if (!disable) {
-		/* when pmf stop, disable link status intr and callout */
-		aq_enable_intr(sc, false, false);
-		callout_stop(&sc->sc_tick_ch);
-	}
+	aq_enable_intr(sc, /*link*/false, /*txrx*/false);
+	callout_halt(&sc->sc_tick_ch, &sc->sc_mutex);
 
-	ifp->if_flags &= ~(IFF_RUNNING | IFF_OACTIVE);
-
-	AQ_UNLOCK(sc);
+	ifp->if_flags &= ~IFF_RUNNING;
+	sc->sc_if_flags = ifp->if_flags;
 }
 
+
 static void
-aq_watchdog(struct ifnet *ifp)
+aq_handle_reset_work(struct work *work, void *arg)
 {
-	struct aq_softc *sc = ifp->if_softc;
-	struct aq_txring *txring;
-	int n, head, tail;
+	struct aq_softc * const sc = arg;
+	struct ifnet * const ifp = &sc->sc_ethercom.ec_if;
+
+	printf("%s: watchdog timeout -- resetting\n", ifp->if_xname);
 
 	AQ_LOCK(sc);
 
@@ -5323,15 +4920,15 @@ aq_watchdog(struct ifnet *ifp)
 	    __func__, AQ_READ_REG(sc, AQ_INTR_MASK_REG),
 	    AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
 
-	for (n = 0; n < sc->sc_nqueues; n++) {
-		txring = &sc->sc_queue[n].txring;
-		head = AQ_READ_REG_BIT(sc,
+	for (u_int n = 0; n < sc->sc_nqueues; n++) {
+		struct aq_txring *txring = &sc->sc_queue[n].txring;
+		u_int head = AQ_READ_REG_BIT(sc,
 		    TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index),
-		    TX_DMA_DESC_HEAD_PTR),
-		tail = AQ_READ_REG(sc,
+		    TX_DMA_DESC_HEAD_PTR);
+		u_int tail = AQ_READ_REG(sc,
 		    TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index));
 
-		device_printf(sc->sc_dev, "%s: TXring[%d] HEAD/TAIL=%d/%d\n",
+		device_printf(sc->sc_dev, "%s: TXring[%u] HEAD/TAIL=%u/%u\n",
 		    __func__, txring->txr_index, head, tail);
 
 		aq_tx_intr(txring);
@@ -5339,45 +4936,33 @@ aq_watchdog(struct ifnet *ifp)
 
 	AQ_UNLOCK(sc);
 
+	/* Don't want ioctl operations to happen */
+	IFNET_LOCK(ifp);
+
+	/* reset the interface. */
 	aq_init(ifp);
-}
 
-#ifdef XXX_DUMP_MACTABLE
-static void
-aq_dump_mactable(struct aq_softc *sc)
-{
-	int i;
-	uint32_t h, l;
+	IFNET_UNLOCK(ifp);
 
-	for (i = 0; i < AQ_HW_MAC_NUM; i++) {
-		l = AQ_READ_REG(sc, RPF_L2UC_LSW_REG(i));
-		h = AQ_READ_REG(sc, RPF_L2UC_MSW_REG(i));
-		printf("MAC TABLE[%d] %02x:%02x:%02x:%02x:%02x:%02x"
-		    " enable=%d, actf=%ld%s\n",
-		    i,
-		    (h >> 8) & 0xff, h & 0xff,
-		    (l >> 24) & 0xff, (l >> 16) & 0xff,
-		    (l >> 8) & 0xff, l & 0xff,
-		    (h & RPF_L2UC_MSW_EN) ? 1 : 0,
-		    AQ_READ_REG_BIT(sc,
-		    RPF_L2UC_MSW_REG(i), RPF_L2UC_MSW_ACTION),
-		    (i == AQ_HW_MAC_OWN) ? " (myself)" : "");
-	}
+	atomic_store_relaxed(&sc->sc_reset_pending, 0);
 }
-#endif
 
 static int
 aq_ioctl(struct ifnet *ifp, unsigned long cmd, void *data)
 {
-	struct aq_softc *sc __unused;
-	struct ifreq *ifr __unused;
-	int error, s;
+	struct aq_softc * const sc = ifp->if_softc;
+	struct ifreq * const ifr = data;
+	int error = 0;
 
-	sc = (struct aq_softc *)ifp->if_softc;
-	ifr = (struct ifreq *)data;
-	error = 0;
+	switch (cmd) {
+	case SIOCADDMULTI:
+	case SIOCDELMULTI:
+		break;
+	default:
+		KASSERT(IFNET_LOCKED(ifp));
+	}
 
-	s = splnet();
+	const int s = splnet();
 	switch (cmd) {
 	case SIOCSIFMTU:
 		if (ifr->ifr_mtu < ETHERMIN || ifr->ifr_mtu > sc->sc_max_mtu) {
@@ -5402,17 +4987,15 @@ aq_ioctl(struct ifnet *ifp, unsigned long cmd, void *data)
 		break;
 	case SIOCADDMULTI:
 	case SIOCDELMULTI:
-		if ((ifp->if_flags & IFF_RUNNING) == 0)
-			break;
-
-		/*
-		 * Multicast list has changed; set the hardware filter
-		 * accordingly.
-		 */
-		error = aq_set_filter(sc);
-#ifdef XXX_DUMP_MACTABLE
-		aq_dump_mactable(sc);
-#endif
+		AQ_LOCK(sc);
+		if ((sc->sc_if_flags & IFF_RUNNING) != 0) {
+		       /*
+			* Multicast list has changed; set the hardware filter
+			* accordingly.
+			*/
+			error = aq_set_filter(sc);
+		}
+		AQ_UNLOCK(sc);
 		break;
 	}
 
